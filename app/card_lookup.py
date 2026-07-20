@@ -1,3 +1,4 @@
+import re
 import time
 from datetime import datetime, timezone
 
@@ -5,7 +6,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from .models import CardSearchHistory
-from .pricing import HEADERS, SCRYFALL_NAMED_URL, PER_CARD_DELAY_SECONDS
+from .pricing import HEADERS, SCRYFALL_NAMED_URL, SCRYFALL_CARDS_BASE, PER_CARD_DELAY_SECONDS
 
 # Curated subset of Scryfall's ~18 tracked formats — the ones players
 # actually check, rather than a wall of badges for formats like
@@ -13,6 +14,49 @@ from .pricing import HEADERS, SCRYFALL_NAMED_URL, PER_CARD_DELAY_SECONDS
 DISPLAY_FORMATS = ["standard", "pioneer", "modern", "legacy", "vintage", "commander", "pauper"]
 
 RECENT_CARDS_LIMIT = 3
+
+# Matches a trailing "SET NUMBER" printing reference in Card Search's
+# free-text input, e.g. "CLB 304" — a set code (letters and/or digits;
+# some real codes are alphanumeric, e.g. "40k") followed by whitespace
+# and a collector number. The number MUST start with a digit — without
+# that, a plain two-word card name with no comma (e.g. "Sol Ring") would
+# itself match "SET NUMBER" (SOL + Ring) and get misparsed as a printing
+# reference instead of searched by name.
+_PRINTING_QUERY = re.compile(r"^([A-Za-z0-9]{2,5})\s+(\d+\S*)$")
+
+
+def _parse_search_query(query: str) -> tuple[str, str, str]:
+    """
+    Parses Card Search's input for an optional exact-printing reference,
+    so a search can pin one specific card instead of relying on
+    Scryfall's fuzzy name match:
+      "Lightning Bolt, CLB 304"  -> ("Lightning Bolt", "CLB", "304")
+      "CLB 304"                  -> ("", "CLB", "304")
+      "Lightning Bolt"           -> ("Lightning Bolt", "", "")  (fuzzy, as before)
+
+    set_code/collector_number are "" when no printing reference was
+    recognized. Many real card names contain a comma of their own (e.g.
+    "Urza, Lord High Artificer") — splits on the *last* comma (so a
+    printing suffix still works after one of those, e.g. "Jhoira,
+    Weatherlight Captain, CLB 5") and, if what follows doesn't actually
+    parse as "SET NUMBER", assumes the comma belongs to the name itself
+    and returns the *whole* original query untouched rather than
+    truncating it.
+    """
+    query = query.strip()
+
+    if "," in query:
+        name_part, _, printing_part = query.rpartition(",")
+        match = _PRINTING_QUERY.match(printing_part.strip())
+        if match:
+            return name_part.strip(), match.group(1).upper(), match.group(2)
+        return query, "", ""
+
+    match = _PRINTING_QUERY.match(query)
+    if match:
+        return "", match.group(1).upper(), match.group(2)
+
+    return query, "", ""
 
 
 def _face_info(face: dict) -> dict:
@@ -29,18 +73,42 @@ def _face_info(face: dict) -> dict:
     }
 
 
-def lookup_card(name: str) -> dict | None:
+def lookup_card(query: str) -> dict | None:
     """
-    Fuzzy-looks up one card by name via Scryfall's /cards/named endpoint
-    (same fuzzy-match Scryfall does server-side, so no local matching
-    needed) and returns a normalized dict of everything the Card Search
-    view displays — image, oracle text, prices, legalities, etc.
+    Looks up one card from Card Search's free-text input.
 
-    Double-faced cards (transform/MDFC) carry their printed info under
-    `card_faces` instead of at the top level; those are normalized into
-    `faces` (a list of both sides) so the frontend doesn't need to know
-    the difference. Returns None if Scryfall has no match at all.
+    If the query names an exact printing — a trailing "SET NUMBER",
+    optionally after "Card Name, " (see _parse_search_query) — fetches
+    that precise printing via Scryfall's /cards/{set}/{number} endpoint.
+    No fuzzy matching involved there: set+number alone already uniquely
+    identifies one specific printing, unlike a bare name. Falls back to
+    fuzzy name matching via /cards/named (Scryfall's own fuzzy-match,
+    same as always) when the query doesn't parse as a printing
+    reference, or when a named printing 404s but a name was also given
+    (e.g. a typo'd collector number) — better to surface *a* match than
+    a hard failure on a near-miss. Returns None if Scryfall has no
+    match at all.
     """
+    name, set_code, collector_number = _parse_search_query(query)
+
+    if set_code and collector_number:
+        card = _fetch_by_printing(set_code, collector_number)
+        if card is not None:
+            return _normalize_card(card)
+        if not name:
+            return None
+        # Fall through to the fuzzy name search below using just `name`.
+
+    if not name:
+        return None
+
+    card = _fetch_by_name(name)
+    if card is None:
+        return None
+    return _normalize_card(card)
+
+
+def _fetch_by_name(name: str) -> dict | None:
     with httpx.Client(follow_redirects=True) as client:
         resp = client.get(SCRYFALL_NAMED_URL, params={"fuzzy": name}, headers=HEADERS, timeout=15)
     time.sleep(PER_CARD_DELAY_SECONDS)  # respect Scryfall's rate-limit guidance
@@ -48,8 +116,33 @@ def lookup_card(name: str) -> dict | None:
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
-    card = resp.json()
+    return resp.json()
 
+
+def _fetch_by_printing(set_code: str, collector_number: str) -> dict | None:
+    with httpx.Client(follow_redirects=True) as client:
+        resp = client.get(
+            f"{SCRYFALL_CARDS_BASE}/{set_code.lower()}/{collector_number}", headers=HEADERS, timeout=15
+        )
+    time.sleep(PER_CARD_DELAY_SECONDS)  # respect Scryfall's rate-limit guidance
+
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _normalize_card(card: dict) -> dict:
+    """
+    Returns a normalized dict of everything the Card Search view
+    displays — image, oracle text, prices, legalities, etc. — from a
+    raw Scryfall card object, however it was fetched.
+
+    Double-faced cards (transform/MDFC) carry their printed info under
+    `card_faces` instead of at the top level; those are normalized into
+    `faces` (a list of both sides) so the frontend doesn't need to know
+    the difference.
+    """
     raw_faces = card.get("card_faces") or []
     # Transform / modal-DFC / reversible cards: each face is visually a
     # separate card with its own image. Split / Adventure cards also

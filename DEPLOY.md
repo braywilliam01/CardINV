@@ -1,4 +1,4 @@
-# Deployment Runbook — Proxmox LXC (venv + systemd)
+# CardINV Deployment Runbook — Proxmox LXC (venv + systemd)
 
 Docker is intentionally not used here — Docker-in-LXC requires nesting
 (`nesting=1`, sometimes `keyctl=1`) and is redundant overhead for an app
@@ -28,8 +28,8 @@ apt update && apt install -y python3 python3-venv python3-pip nginx git
 
 ```bash
 cd /opt
-git clone https://github.com/<you>/mtg-inventory.git
-cd mtg-inventory
+git clone https://github.com/<you>/CardINV.git
+cd CardINV
 
 python3 -m venv venv
 source venv/bin/activate
@@ -50,7 +50,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 Put the result in an env file the systemd unit will load (step 6):
 
 ```bash
-# /opt/mtg-inventory/.env
+# /opt/CardINV/.env
 SESSION_SECRET_KEY=<paste the generated value>
 SESSION_HTTPS_ONLY=true
 # Optional — raises the Pokemon price-refresh rate limit from 1,000 to
@@ -59,19 +59,35 @@ SESSION_HTTPS_ONLY=true
 # POKEMONTCG_API_KEY=<your key>
 
 # Optional — relocates all SQLite data (default: ./data, i.e.
-# /opt/mtg-inventory/data). Useful for putting data on a separate
+# /opt/CardINV/data). Useful for putting data on a separate
 # mounted volume.
-# DATA_DIR=/mnt/mtg-data
+# DATA_DIR=/mnt/cardinv-data
 # Optional — overrides just the shared accounts database's location/URL
 # (default: sqlite:///<DATA_DIR>/users.db). Rarely needed on its own —
 # DATA_DIR above already moves this along with everything else.
-# AUTH_DATABASE_URL=sqlite:////mnt/mtg-data/users.db
+# AUTH_DATABASE_URL=sqlite:////mnt/cardinv-data/users.db
 ```
 
 `SESSION_HTTPS_ONLY=true` marks the session cookie HTTPS-only — correct once
 this sits behind TLS termination (step 7), but leave it unset (defaults to
 `false`) if you're sanity-checking over plain `http://127.0.0.1:8000` in the
 next step first.
+
+**Troubleshooting: login appears to work (the drawer shows your username)
+but every action afterward says you're not logged in.** This means the
+session cookie isn't making it back to the server on later requests —
+almost always `SESSION_HTTPS_ONLY=true` combined with accessing the app
+over plain `http://` instead of `https://` (e.g. hitting
+`http://<lxc-ip>:8000` directly instead of going through the reverse
+proxy). The cookie gets marked `Secure` on login, so the browser stores
+it but refuses to send it back over a non-HTTPS connection — the
+drawer's username comes straight from the login response body, not a
+second authenticated check, so it looks like login worked right up
+until the first real API call 401s. Fix: always access the app through
+its HTTPS reverse-proxy URL. If you need direct local HTTP access to
+keep working too, set `SESSION_HTTPS_ONLY=false` instead — the
+trade-off is the session cookie can then be sent over any plain-HTTP
+connection, not just an HTTPS one.
 
 ## 5. Sanity check before wiring up systemd
 
@@ -102,25 +118,25 @@ into `data/`, which holds the shared accounts database plus one SQLite file
 per user per game):
 
 ```bash
-sudo chown -R www-data:www-data /opt/mtg-inventory
+sudo chown -R www-data:www-data /opt/CardINV
 ```
 
 ## 7. systemd service
 
-Create `/etc/systemd/system/mtg-inventory.service`:
+Create `/etc/systemd/system/CardINV.service`:
 
 ```ini
 [Unit]
-Description=MTG Inventory Manager
+Description=CardINV — MTG & Pokemon Inventory Manager
 After=network.target
 
 [Service]
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/mtg-inventory
-EnvironmentFile=/opt/mtg-inventory/.env
-ExecStart=/opt/mtg-inventory/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+WorkingDirectory=/opt/CardINV
+EnvironmentFile=/opt/CardINV/.env
+ExecStart=/opt/CardINV/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=on-failure
 RestartSec=5
 
@@ -139,9 +155,9 @@ Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now mtg-inventory
-sudo systemctl status mtg-inventory   # confirm "active (running)"
-journalctl -u mtg-inventory -f        # tail logs
+sudo systemctl enable --now CardINV
+sudo systemctl status CardINV   # confirm "active (running)"
+journalctl -u CardINV -f        # tail logs
 ```
 
 ## 8. Reverse proxy (nginx)
@@ -152,7 +168,7 @@ in step 2) and use:
 ```nginx
 server {
     listen 80;
-    server_name mtg.yourdomain.com;
+    server_name cardinv.yourdomain.com;
 
     client_max_body_size 10M;  # ManaBox CSVs can run a few MB for large collections
 
@@ -171,7 +187,7 @@ proxy manager or Cloudflare Tunnel), skip installing nginx in this
 container and instead:
 - Change `ExecStart` above to `--host 0.0.0.0` so uvicorn accepts
   connections from outside the container's loopback.
-- Point the existing proxy at `<mtg-lxc-ip>:8000`.
+- Point the existing proxy at `<cardinv-lxc-ip>:8000`.
 
 Then apply your usual TLS termination (certbot / Cloudflare) on top.
 
@@ -183,15 +199,15 @@ Everything worth backing up lives under `data/` — the shared accounts
 database plus one SQLite file per user per game:
 
 ```bash
-# /etc/cron.daily/mtg-inventory-backup
+# /etc/cron.daily/CardINV-backup
 #!/bin/bash
-mkdir -p /opt/mtg-inventory/backups
-tar -czf /opt/mtg-inventory/backups/data_$(date +%F).tar.gz -C /opt/mtg-inventory data
-find /opt/mtg-inventory/backups -mtime +30 -delete
+mkdir -p /opt/CardINV/backups
+tar -czf /opt/CardINV/backups/data_$(date +%F).tar.gz -C /opt/CardINV data
+find /opt/CardINV/backups -mtime +30 -delete
 ```
 
 ```bash
-chmod +x /etc/cron.daily/mtg-inventory-backup
+chmod +x /etc/cron.daily/CardINV-backup
 ```
 
 **Weekly price refresh (Scryfall + pokemontcg.io):**
@@ -206,7 +222,7 @@ so refreshing both games means switching games between two refresh calls
 on the same cookie jar, not just calling it twice:
 
 ```bash
-# /etc/cron.weekly/mtg-inventory-price-refresh
+# /etc/cron.weekly/CardINV-price-refresh
 #!/bin/bash
 # Run once per account you want refreshed automatically.
 USERNAME="alice"
@@ -231,7 +247,7 @@ rm -f "$COOKIE_JAR"
 ```
 
 ```bash
-chmod 700 /etc/cron.weekly/mtg-inventory-price-refresh   # contains a password
+chmod 700 /etc/cron.weekly/CardINV-price-refresh   # contains a password
 ```
 
 For more than one account, either repeat the whole block per user in the
@@ -260,7 +276,7 @@ you can watch it from either angle:
 
 ```bash
 # Live logs — shows each stage (fetching index, downloading, matching, committing)
-journalctl -u mtg-inventory -f
+journalctl -u CardINV -f
 
 # Or poll the status endpoint directly (needs a logged-in session with the
 # same game active as the refresh you're checking on — reuse a cookie jar
@@ -282,9 +298,9 @@ restoring an individual day's DB without touching the whole container.
 
 ## 10. Verify end-to-end
 
-- [ ] `systemctl status mtg-inventory` shows active
+- [ ] `systemctl status CardINV` shows active
 - [ ] App loads via the reverse-proxy URL, not just `127.0.0.1:8000`
-- [ ] `SESSION_SECRET_KEY` is set — no warning about the insecure default in `journalctl -u mtg-inventory`
+- [ ] `SESSION_SECRET_KEY` is set — no warning about the insecure default in `journalctl -u CardINV`
 - [ ] The account you registered first is the admin (Settings → Manage Users shows a user list)
 - [ ] Registering a new account works, and its data is isolated from any other account (`data/users/<name>/<mtg|pokemon>/inventory.db` is a separate file per user per game)
 - [ ] Logging out and back in preserves that account's data

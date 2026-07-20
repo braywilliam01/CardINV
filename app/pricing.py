@@ -5,15 +5,16 @@ import time
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .models import Inventory, CardPrice
+from .price_estimation import refresh_estimated_prices
 
 logger = logging.getLogger("mtg_inventory.pricing")
 
 SCRYFALL_BULK_INFO_URL = "https://api.scryfall.com/bulk-data"
 SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named"
+SCRYFALL_CARDS_BASE = "https://api.scryfall.com/cards"
 
 # Scryfall's API guidelines ask that clients identify themselves via
 # User-Agent and Accept, and that rapid-fire single-card requests be
@@ -51,7 +52,7 @@ class PricingError(Exception):
 # ---------------------------------------------------------------------
 _status = {
     "in_progress": False,
-    "stage": None,  # "fetching_index" | "downloading" | "matching" | "committing" | None
+    "stage": None,  # "fetching_index" | "downloading" | "matching" | "estimating" | "committing" | None
     "started_at": None,
     "finished_at": None,
     "cards_processed": 0,
@@ -70,12 +71,13 @@ def _get_bulk_entry(client: httpx.Client) -> dict:
     resp.raise_for_status()
     data = resp.json()
     for entry in data.get("data", []):
-        # oracle_cards = one row per unique card (deduplicated across
-        # printings/sets), which matches how this app tracks inventory
-        # (by card name only, not by specific printing).
-        if entry.get("type") == "oracle_cards":
+        # default_cards = one row per unique printing (every set/
+        # collector-number combination), needed now that pricing is
+        # per-printing (see models.py) rather than deduplicated by name
+        # the way oracle_cards is.
+        if entry.get("type") == "default_cards":
             return entry
-    raise PricingError("Could not find 'oracle_cards' bulk data entry from Scryfall.")
+    raise PricingError("Could not find 'default_cards' bulk data entry from Scryfall.")
 
 
 def _download_cards(client: httpx.Client, entry: dict) -> list[dict]:
@@ -116,12 +118,18 @@ def _download_cards(client: httpx.Client, entry: dict) -> list[dict]:
 
 def refresh_all_prices(db: Session) -> dict:
     """
-    Downloads Scryfall's oracle_cards bulk data file and updates
-    CardPrice for every card currently in inventory. One bulk download
-    regardless of collection size — suitable for the weekly cron job or
-    an on-demand "refresh everything" button. Cards not found in the
-    bulk file (e.g. a typo'd name) are left with whatever price they
-    had before, not wiped.
+    Downloads Scryfall's default_cards bulk data file (every printing)
+    and updates CardPrice for every *owned* printing currently in
+    inventory — i.e. every non-unresolved Inventory row. One bulk
+    download regardless of collection size, suitable for the weekly
+    cron job or an on-demand "refresh everything" button. Only writes a
+    CardPrice row for a printing actually in inventory (default_cards
+    has ~10x the rows of oracle_cards; matching indiscriminately would
+    bloat the price table with printings nobody owns).
+
+    After matching, backfills an estimated price (cheapest known
+    printing) for every name that also has an unresolved bucket — see
+    price_estimation.py.
 
     Commits in batches of BATCH_COMMIT_SIZE cards rather than one commit
     for the whole file, and isolates per-card failures (e.g. malformed
@@ -133,7 +141,7 @@ def refresh_all_prices(db: Session) -> dict:
     by get_refresh_status(), so progress is visible server-side while
     this runs, not just after the HTTP request completes.
     """
-    inventory_names = {row.card_name for row in db.query(Inventory.card_name).all()}
+    inventory_names = {row.card_name for row in db.query(Inventory.card_name).distinct().all()}
 
     _status.update({
         "in_progress": True,
@@ -147,10 +155,21 @@ def refresh_all_prices(db: Session) -> dict:
 
     if not inventory_names:
         _status.update({"in_progress": False, "stage": None, "finished_at": datetime.now(timezone.utc).isoformat()})
-        return {"matched": 0, "unmatched": 0, "total_cards": 0}
+        return {"matched": 0, "unmatched": 0, "total_cards": 0, "skipped_errors": 0, "estimated": 0}
 
-    logger.info("Bulk price refresh starting for %d cards in inventory", len(inventory_names))
-    lookup_by_lower = {name.lower(): name for name in inventory_names}
+    # Only printings actually owned (excludes the "" / "" unresolved
+    # bucket, which gets an estimated price afterward instead).
+    printing_lookup = {
+        (r.card_name.lower(), r.set_code, r.collector_number): r.card_name
+        for r in db.query(Inventory.card_name, Inventory.set_code, Inventory.collector_number)
+        .filter(~((Inventory.set_code == "") & (Inventory.collector_number == "")))
+        .all()
+    }
+
+    logger.info(
+        "Bulk price refresh starting for %d owned printings across %d inventory names",
+        len(printing_lookup), len(inventory_names),
+    )
 
     try:
         with httpx.Client(follow_redirects=True) as client:
@@ -160,16 +179,16 @@ def refresh_all_prices(db: Session) -> dict:
             _status["stage"] = "downloading"
             size_hint = entry.get("size")
             logger.info(
-                "Downloading oracle_cards bulk file (%s)...",
+                "Downloading default_cards bulk file (%s)...",
                 f"~{size_hint / 1_000_000:.0f} MB" if size_hint else "size unknown",
             )
             cards = _download_cards(client, entry)
 
         _status["total_cards_in_file"] = len(cards)
-        logger.info("Downloaded and parsed %d cards from Scryfall", len(cards))
+        logger.info("Downloaded and parsed %d printings from Scryfall", len(cards))
 
         _status["stage"] = "matching"
-        matched_names = set()
+        matched_keys = set()
         skipped_names: list[str] = []
         now = datetime.now(timezone.utc)
         pending_since_commit = 0
@@ -179,7 +198,10 @@ def refresh_all_prices(db: Session) -> dict:
                 _status["cards_processed"] = i
 
             name = card.get("name", "")
-            canonical = lookup_by_lower.get(name.lower())
+            set_code = (card.get("set") or "").upper()
+            collector_number = card.get("collector_number") or ""
+            key = (name.lower(), set_code, collector_number)
+            canonical = printing_lookup.get(key)
             if canonical is None:
                 continue
 
@@ -188,22 +210,31 @@ def refresh_all_prices(db: Session) -> dict:
                 price_usd = float(prices["usd"]) if prices.get("usd") is not None else None
                 price_usd_foil = float(prices["usd_foil"]) if prices.get("usd_foil") is not None else None
             except (TypeError, ValueError):
-                # Skip just this card — e.g. Scryfall returning a
+                # Skip just this printing — e.g. Scryfall returning a
                 # non-numeric price string — rather than losing the
                 # whole refresh over one bad record.
-                logger.warning("Skipping '%s' — malformed price data from Scryfall: %r", canonical, prices)
+                logger.warning("Skipping '%s' (%s #%s) — malformed price data: %r", canonical, set_code, collector_number, prices)
                 skipped_names.append(canonical)
                 continue
 
-            existing = db.query(CardPrice).filter(CardPrice.card_name == canonical).one_or_none()
+            existing = (
+                db.query(CardPrice)
+                .filter(
+                    CardPrice.card_name == canonical,
+                    CardPrice.set_code == set_code,
+                    CardPrice.collector_number == collector_number,
+                )
+                .one_or_none()
+            )
             if existing is None:
-                existing = CardPrice(card_name=canonical)
+                existing = CardPrice(card_name=canonical, set_code=set_code, collector_number=collector_number)
                 db.add(existing)
 
             existing.price_usd = price_usd
             existing.price_usd_foil = price_usd_foil
+            existing.is_estimated = False
             existing.updated_at = now
-            matched_names.add(canonical)
+            matched_keys.add(key)
 
             pending_since_commit += 1
             if pending_since_commit >= BATCH_COMMIT_SIZE:
@@ -211,18 +242,30 @@ def refresh_all_prices(db: Session) -> dict:
                 pending_since_commit = 0
 
         _status["cards_processed"] = len(cards)
+        db.commit()
+
+        _status["stage"] = "estimating"
+        estimated = refresh_estimated_prices(db, now)
+
+        matched_canonical_names = {printing_lookup[k] for k in matched_keys}
+
         _status["stage"] = "committing"
         db.commit()
 
         result = {
-            "matched": len(matched_names),
-            "unmatched": len(inventory_names) - len(matched_names),
+            "matched": len(matched_canonical_names),
+            "unmatched": len(inventory_names) - len(matched_canonical_names),
             "total_cards": len(inventory_names),
+            "matched_printings": len(matched_keys),
+            "total_printings": len(printing_lookup),
             "skipped_errors": len(skipped_names),
+            "estimated": estimated,
         }
         logger.info(
-            "Bulk price refresh complete: %d/%d inventory cards matched (%d skipped due to errors)",
-            result["matched"], result["total_cards"], result["skipped_errors"],
+            "Bulk price refresh complete: %d/%d owned printings matched across %d/%d inventory names "
+            "(%d skipped due to errors, %d unresolved buckets estimated)",
+            result["matched_printings"], result["total_printings"], result["matched"], result["total_cards"],
+            result["skipped_errors"], result["estimated"],
         )
 
         _status.update({
@@ -244,20 +287,48 @@ def refresh_all_prices(db: Session) -> dict:
         raise
 
 
-def refresh_single_price(db: Session, card_name: str) -> CardPrice | None:
+def refresh_single_price(db: Session, card_name: str, set_code: str = "", collector_number: str = "") -> CardPrice | None:
     """
-    On-demand lookup for one card via Scryfall's fuzzy-name endpoint.
-    For "just added this card, get its price now" — not meant to be
-    looped over an entire collection (use refresh_all_prices for that;
-    it's a single bulk download instead of N individual requests, and
-    N individual requests against Scryfall for a few hundred+ unique
-    cards would be slow and impolite to their API).
-    Returns None if Scryfall has no match for the name at all.
+    On-demand lookup for one printing. For "just added this card, get
+    its price now" — not meant to be looped over an entire collection
+    (use refresh_all_prices for that).
+
+    With set_code/collector_number given, fetches that exact printing
+    via Scryfall's precise /cards/{set}/{number} endpoint and stores a
+    real (is_estimated=False) price. Without them (the unresolved
+    bucket's own "$" action), this first tries the free option — if any
+    of the name's other printings already has a real cached price,
+    reuses the cheapest of those as the estimate (see
+    price_estimation.py) rather than spending an API call. Only when no
+    real price is cached yet for the name does it fall back to
+    Scryfall's fuzzy name endpoint — its own guess at "the" printing —
+    storing that as is_estimated=True, same as the bulk refresh's
+    estimate: it's not a price for any specific printing you're known
+    to own.
+
+    Returns None if Scryfall has no match at all.
     """
+    set_code = (set_code or "").strip()
+    collector_number = (collector_number or "").strip()
+
+    if not set_code and not collector_number:
+        estimated = refresh_estimated_prices(db, datetime.now(timezone.utc), {card_name})
+        if estimated:
+            return (
+                db.query(CardPrice)
+                .filter(CardPrice.card_name == card_name, CardPrice.set_code == "", CardPrice.collector_number == "")
+                .one_or_none()
+            )
+
     with httpx.Client(follow_redirects=True) as client:
-        resp = client.get(
-            SCRYFALL_NAMED_URL, params={"fuzzy": card_name}, headers=HEADERS, timeout=15
-        )
+        if set_code and collector_number:
+            resp = client.get(
+                f"{SCRYFALL_CARDS_BASE}/{set_code.lower()}/{collector_number}", headers=HEADERS, timeout=15
+            )
+            target_set, target_number, is_estimated = set_code.upper(), collector_number, False
+        else:
+            resp = client.get(SCRYFALL_NAMED_URL, params={"fuzzy": card_name}, headers=HEADERS, timeout=15)
+            target_set, target_number, is_estimated = "", "", True
     time.sleep(PER_CARD_DELAY_SECONDS)  # respect Scryfall's rate-limit guidance
 
     if resp.status_code == 404:
@@ -269,13 +340,22 @@ def refresh_single_price(db: Session, card_name: str) -> CardPrice | None:
     usd = prices.get("usd")
     usd_foil = prices.get("usd_foil")
 
-    existing = db.query(CardPrice).filter(CardPrice.card_name == card_name).one_or_none()
+    existing = (
+        db.query(CardPrice)
+        .filter(
+            CardPrice.card_name == card_name,
+            CardPrice.set_code == target_set,
+            CardPrice.collector_number == target_number,
+        )
+        .one_or_none()
+    )
     if existing is None:
-        existing = CardPrice(card_name=card_name)
+        existing = CardPrice(card_name=card_name, set_code=target_set, collector_number=target_number)
         db.add(existing)
 
     existing.price_usd = float(usd) if usd is not None else None
     existing.price_usd_foil = float(usd_foil) if usd_foil is not None else None
+    existing.is_estimated = is_estimated
     existing.updated_at = datetime.now(timezone.utc)
 
     db.commit()
@@ -283,44 +363,49 @@ def refresh_single_price(db: Session, card_name: str) -> CardPrice | None:
 
 
 def get_collection_value(db: Session) -> dict:
-    """Total known value of the collection. Cards with no cached price
-    (never refreshed, or not found on Scryfall) are excluded from the
-    total but counted separately so the UI can flag them. Also reports
-    when the most recent price was cached, so the UI can show
-    "as of ...".
+    """Total known value of the collection, printing by printing —
+    each Inventory row is joined to its own exact CardPrice row (real
+    or estimated), since price is per-printing now (see models.py).
+    Printings with no cached price (never refreshed, or not found on
+    Scryfall) are excluded from the total but counted separately so
+    the UI can flag them; estimated printings count as priced but are
+    also reported separately. Also reports when the most recent price
+    was cached, so the UI can show "as of ...".
     """
-    # CardPrice is still keyed by name alone (see models.py), while
-    # Inventory can now have multiple printing rows per name — sum
-    # quantity per name first so a name with several printings counts
-    # as one priced/unpriced card, not one per printing row.
-    inv_totals = (
-        db.query(Inventory.card_name, func.sum(Inventory.total_quantity).label("total_quantity"))
-        .group_by(Inventory.card_name)
-        .subquery()
-    )
     rows = (
-        db.query(inv_totals.c.card_name, inv_totals.c.total_quantity, CardPrice)
-        .outerjoin(CardPrice, inv_totals.c.card_name == CardPrice.card_name)
+        db.query(Inventory, CardPrice)
+        .outerjoin(
+            CardPrice,
+            (Inventory.card_name == CardPrice.card_name)
+            & (Inventory.set_code == CardPrice.set_code)
+            & (Inventory.collector_number == CardPrice.collector_number),
+        )
         .all()
     )
 
     total_value = 0.0
-    priced_cards = 0
-    unpriced_cards = 0
+    priced_printings = 0
+    unpriced_printings = 0
+    estimated_printings = 0
     last_updated = None
 
-    for card_name, total_quantity, price in rows:
+    for inv, price in rows:
+        if inv.total_quantity <= 0:
+            continue  # a zeroed-out printing row shouldn't count as "unpriced" clutter
         if price is not None and price.price_usd is not None:
-            total_value += price.price_usd * total_quantity
-            priced_cards += 1
+            total_value += price.price_usd * inv.total_quantity
+            priced_printings += 1
+            if price.is_estimated:
+                estimated_printings += 1
             if price.updated_at and (last_updated is None or price.updated_at > last_updated):
                 last_updated = price.updated_at
         else:
-            unpriced_cards += 1
+            unpriced_printings += 1
 
     return {
         "total_value_usd": round(total_value, 2),
-        "priced_cards": priced_cards,
-        "unpriced_cards": unpriced_cards,
+        "priced_cards": priced_printings,
+        "unpriced_cards": unpriced_printings,
+        "estimated_cards": estimated_printings,
         "last_updated": last_updated.isoformat() if last_updated else None,
     }

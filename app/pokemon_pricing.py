@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from .models import Inventory, CardPrice
 from .pokemon_common import POKEMON_API_BASE, HEADERS, extract_usd_prices
-from .pokemon_lookup import lookup_card
+from .pokemon_lookup import lookup_card, lookup_card_printing
+from .price_estimation import refresh_estimated_prices
 
 logger = logging.getLogger("mtg_inventory.pokemon_pricing")
 
@@ -89,11 +90,13 @@ def refresh_all_prices(db: Session) -> dict:
     Pokemontcg.io has no single bulk-price-download file the way
     Scryfall does (their static data dump deliberately excludes
     prices) — so this paginates the full ~20k-card catalog (250/card
-    per page, ~82 requests) and matches against inventory as it goes,
-    same shape as the MTG bulk refresh otherwise: batched commits,
-    per-card error isolation, and live status for polling.
+    per page, ~82 requests) and matches against *owned printings* as it
+    goes (name+set+number — excludes the unresolved bucket, which gets
+    an estimated price afterward instead), same shape as the MTG bulk
+    refresh otherwise: batched commits, per-card error isolation, and
+    live status for polling.
     """
-    inventory_names = {row.card_name for row in db.query(Inventory.card_name).all()}
+    inventory_names = {row.card_name for row in db.query(Inventory.card_name).distinct().all()}
 
     _status.update({
         "in_progress": True,
@@ -107,12 +110,21 @@ def refresh_all_prices(db: Session) -> dict:
 
     if not inventory_names:
         _status.update({"in_progress": False, "stage": None, "finished_at": datetime.now(timezone.utc).isoformat()})
-        return {"matched": 0, "unmatched": 0, "total_cards": 0, "skipped_errors": 0}
+        return {"matched": 0, "unmatched": 0, "total_cards": 0, "skipped_errors": 0, "estimated": 0}
 
-    logger.info("Pokemon bulk price refresh starting for %d cards in inventory", len(inventory_names))
-    lookup_by_lower = {name.lower(): name for name in inventory_names}
+    printing_lookup = {
+        (r.card_name.lower(), r.set_code, r.collector_number): r.card_name
+        for r in db.query(Inventory.card_name, Inventory.set_code, Inventory.collector_number)
+        .filter(~((Inventory.set_code == "") & (Inventory.collector_number == "")))
+        .all()
+    }
 
-    matched_names = set()
+    logger.info(
+        "Pokemon bulk price refresh starting for %d owned printings across %d inventory names",
+        len(printing_lookup), len(inventory_names),
+    )
+
+    matched_keys = set()
     skipped_names: list[str] = []
     skipped_pages: list[int] = []
     pending_since_commit = 0
@@ -155,26 +167,41 @@ def refresh_all_prices(db: Session) -> dict:
                 _status["stage"] = "matching"
                 for card in cards:
                     name = card.get("name", "")
-                    canonical = lookup_by_lower.get(name.lower())
+                    set_code = ((card.get("set") or {}).get("ptcgoCode") or (card.get("set") or {}).get("id") or "").upper()
+                    collector_number = card.get("number") or ""
+                    key = (name.lower(), set_code, collector_number)
+                    canonical = printing_lookup.get(key)
                     if canonical is None:
                         continue
 
                     try:
                         price_usd, price_usd_foil = extract_usd_prices(card)
                     except (TypeError, ValueError):
-                        logger.warning("Skipping '%s' — malformed price data from pokemontcg.io", canonical)
+                        logger.warning(
+                            "Skipping '%s' (%s #%s) — malformed price data from pokemontcg.io",
+                            canonical, set_code, collector_number,
+                        )
                         skipped_names.append(canonical)
                         continue
 
-                    existing = db.query(CardPrice).filter(CardPrice.card_name == canonical).one_or_none()
+                    existing = (
+                        db.query(CardPrice)
+                        .filter(
+                            CardPrice.card_name == canonical,
+                            CardPrice.set_code == set_code,
+                            CardPrice.collector_number == collector_number,
+                        )
+                        .one_or_none()
+                    )
                     if existing is None:
-                        existing = CardPrice(card_name=canonical)
+                        existing = CardPrice(card_name=canonical, set_code=set_code, collector_number=collector_number)
                         db.add(existing)
 
                     existing.price_usd = price_usd
                     existing.price_usd_foil = price_usd_foil
+                    existing.is_estimated = False
                     existing.updated_at = now
-                    matched_names.add(canonical)
+                    matched_keys.add(key)
 
                     pending_since_commit += 1
                     if pending_since_commit >= BATCH_COMMIT_SIZE:
@@ -184,20 +211,31 @@ def refresh_all_prices(db: Session) -> dict:
                 _status["cards_processed"] = page * PAGE_SIZE
                 time.sleep(BETWEEN_PAGE_DELAY_SECONDS)
 
+        db.commit()
+
+        _status["stage"] = "estimating"
+        estimated = refresh_estimated_prices(db, now)
+
+        matched_canonical_names = {printing_lookup[k] for k in matched_keys}
+
         _status["stage"] = "committing"
         db.commit()
 
         result = {
-            "matched": len(matched_names),
-            "unmatched": len(inventory_names) - len(matched_names),
+            "matched": len(matched_canonical_names),
+            "unmatched": len(inventory_names) - len(matched_canonical_names),
             "total_cards": len(inventory_names),
+            "matched_printings": len(matched_keys),
+            "total_printings": len(printing_lookup),
             "skipped_errors": len(skipped_names),
             "skipped_pages": len(skipped_pages),
+            "estimated": estimated,
         }
         logger.info(
-            "Pokemon bulk price refresh complete: %d/%d inventory cards matched "
-            "(%d skipped due to errors, %d pages skipped)",
-            result["matched"], result["total_cards"], result["skipped_errors"], result["skipped_pages"],
+            "Pokemon bulk price refresh complete: %d/%d owned printings matched across %d/%d inventory names "
+            "(%d skipped due to errors, %d pages skipped, %d unresolved buckets estimated)",
+            result["matched_printings"], result["total_printings"], result["matched"], result["total_cards"],
+            result["skipped_errors"], result["skipped_pages"], result["estimated"],
         )
 
         _status.update({
@@ -219,23 +257,62 @@ def refresh_all_prices(db: Session) -> dict:
         raise
 
 
-def refresh_single_price(db: Session, card_name: str) -> CardPrice | None:
-    """On-demand lookup for one card via pokemontcg.io — same purpose
-    as pricing.refresh_single_price (the per-row '$' button in Manage
-    Collection) but querying the Pokemon API via pokemon_lookup instead
+def refresh_single_price(
+    db: Session, card_name: str, set_code: str = "", collector_number: str = ""
+) -> CardPrice | None:
+    """On-demand lookup for one printing via pokemontcg.io — same
+    purpose as pricing.refresh_single_price (the '$' button in Manage
+    Collection) but querying pokemontcg.io via pokemon_lookup instead
     of Scryfall. Not meant to be looped over an entire collection; use
-    refresh_all_prices for that. Returns None if no match is found."""
-    result = lookup_card(card_name)
+    refresh_all_prices for that.
+
+    With set_code/collector_number given, fetches that exact printing
+    and stores a real (is_estimated=False) price. Without them (the
+    unresolved bucket's own "$" action), this first tries the free
+    option — reusing the cheapest already-cached real price among the
+    name's other printings (see price_estimation.py) — and only falls
+    back to lookup_card's fuzzy name match (stored as is_estimated=True)
+    when no real price is cached yet for the name. Returns None if no
+    match is found.
+    """
+    set_code = (set_code or "").strip()
+    collector_number = (collector_number or "").strip()
+
+    if not set_code and not collector_number:
+        estimated = refresh_estimated_prices(db, datetime.now(timezone.utc), {card_name})
+        if estimated:
+            return (
+                db.query(CardPrice)
+                .filter(CardPrice.card_name == card_name, CardPrice.set_code == "", CardPrice.collector_number == "")
+                .one_or_none()
+            )
+
+    if set_code or collector_number:
+        result = lookup_card_printing(card_name, set_code, collector_number)
+        target_set, target_number, is_estimated = set_code.upper(), collector_number, False
+    else:
+        result = lookup_card(card_name)
+        target_set, target_number, is_estimated = "", "", True
+
     if result is None:
         return None
 
-    existing = db.query(CardPrice).filter(CardPrice.card_name == card_name).one_or_none()
+    existing = (
+        db.query(CardPrice)
+        .filter(
+            CardPrice.card_name == card_name,
+            CardPrice.set_code == target_set,
+            CardPrice.collector_number == target_number,
+        )
+        .one_or_none()
+    )
     if existing is None:
-        existing = CardPrice(card_name=card_name)
+        existing = CardPrice(card_name=card_name, set_code=target_set, collector_number=target_number)
         db.add(existing)
 
     existing.price_usd = result["price_usd"]
     existing.price_usd_foil = result["price_usd_foil"]
+    existing.is_estimated = is_estimated
     existing.updated_at = datetime.now(timezone.utc)
 
     db.commit()

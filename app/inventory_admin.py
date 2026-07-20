@@ -33,12 +33,20 @@ class PrintingRow:
     to a specific printing. No checked_out/available here: deck
     assignments aren't printing-specific yet (that's a later phase),
     so availability is only meaningful at the card-name level — see
-    InventoryRow.
+    InventoryRow. price_usd/price_usd_foil/is_estimated mirror
+    CardPrice for this exact printing — is_estimated means the price
+    is a stand-in (cheapest known printing, or Scryfall/pokemontcg.io's
+    own fuzzy-name guess) rather than a fetch for this specific
+    printing; see price_estimation.py.
     """
     set_code: str
     collector_number: str
     total_quantity: int
     is_unresolved: bool
+    price_usd: float | None = None
+    price_usd_foil: float | None = None
+    is_estimated: bool = False
+    line_value: float | None = None
 
 
 @dataclass
@@ -47,7 +55,10 @@ class InventoryRow:
     — what Manage Collection's main table renders. total_quantity/
     checked_out/available are summed across all of that name's
     printing rows. `printings` is the per-printing breakdown shown
-    when the row is expanded.
+    when the row is expanded. price_usd is only set when the card has
+    exactly one printing (otherwise "the" price is ambiguous — expand
+    the row to see each printing's own price); line_value always sums
+    every priced printing's own line value regardless of count.
     """
     card_name: str
     total_quantity: int
@@ -58,6 +69,7 @@ class InventoryRow:
     line_value: float | None = None
     printing_count: int = 1
     has_unresolved: bool = False
+    has_estimated: bool = False
     printings: list[PrintingRow] = field(default_factory=list)
 
 
@@ -103,13 +115,34 @@ def _decks_for(db: Session, card_name: str) -> list[DeckHold]:
     return [DeckHold(deck_name=r.deck_name, quantity=r.quantity) for r in rows]
 
 
-def _to_printing_row(inv: Inventory) -> PrintingRow:
+def _to_printing_row(inv: Inventory, price: CardPrice | None) -> PrintingRow:
+    price_usd = price.price_usd if price else None
+    price_usd_foil = price.price_usd_foil if price else None
+    line_value = round(price_usd * inv.total_quantity, 2) if price_usd is not None else None
     return PrintingRow(
         set_code=inv.set_code,
         collector_number=inv.collector_number,
         total_quantity=inv.total_quantity,
         is_unresolved=(inv.set_code == "" and inv.collector_number == ""),
+        price_usd=price_usd,
+        price_usd_foil=price_usd_foil,
+        is_estimated=price.is_estimated if price else False,
+        line_value=line_value,
     )
+
+
+def _aggregate_pricing(printing_rows: list[PrintingRow]) -> tuple[float | None, float | None, bool]:
+    """Rolls per-printing prices up to the group level — see
+    InventoryRow for what price_usd/line_value mean at that level.
+    has_estimated flags if any priced printing's price is a stand-in
+    rather than a real fetch for that exact printing."""
+    line_value = None
+    for p in printing_rows:
+        if p.line_value is not None:
+            line_value = (line_value or 0) + p.line_value
+    price_usd = printing_rows[0].price_usd if len(printing_rows) == 1 else None
+    has_estimated = any(p.is_estimated and p.price_usd is not None for p in printing_rows)
+    return price_usd, (round(line_value, 2) if line_value is not None else None), has_estimated
 
 
 def get_printings_for_card(db: Session, card_name: str) -> list[PrintingRow]:
@@ -122,10 +155,15 @@ def get_printings_for_card(db: Session, card_name: str) -> list[PrintingRow]:
         .all()
     )
     rows.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
-    return [_to_printing_row(r) for r in rows]
+
+    price_by_key = {
+        (p.set_code, p.collector_number): p
+        for p in db.query(CardPrice).filter(CardPrice.card_name == card_name).all()
+    }
+    return [_to_printing_row(r, price_by_key.get((r.set_code, r.collector_number))) for r in rows]
 
 
-def _build_group_row(db: Session, card_name: str) -> InventoryRow:
+def build_group_row(db: Session, card_name: str) -> InventoryRow:
     """Recomputes the full aggregate row for one card name after a
     write — used by the single-card mutation functions (add/adjust/
     delete/assign) so they can return an up-to-date row without the
@@ -135,9 +173,7 @@ def _build_group_row(db: Session, card_name: str) -> InventoryRow:
     decks = _decks_for(db, card_name)
     checked_out = sum(d.quantity for d in decks)
 
-    price = db.query(CardPrice).filter(CardPrice.card_name == card_name).one_or_none()
-    price_usd = price.price_usd if price else None
-    line_value = round(price_usd * total_quantity, 2) if price_usd is not None else None
+    price_usd, line_value, has_estimated = _aggregate_pricing(printings)
 
     return InventoryRow(
         card_name=card_name,
@@ -149,6 +185,7 @@ def _build_group_row(db: Session, card_name: str) -> InventoryRow:
         line_value=line_value,
         printing_count=len(printings),
         has_unresolved=any(p.is_unresolved for p in printings),
+        has_estimated=has_estimated,
         printings=printings,
     )
 
@@ -183,7 +220,7 @@ def list_inventory(
     printing_map: dict[str, list[Inventory]] = {}
     if card_names:
         price_map = {
-            p.card_name: p
+            (p.card_name, p.set_code, p.collector_number): p
             for p in db.query(CardPrice).filter(CardPrice.card_name.in_(card_names)).all()
         }
         for a in (
@@ -199,15 +236,16 @@ def list_inventory(
     for card_name in card_names:
         printings = printing_map.get(card_name, [])
         printings.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
-        printing_rows = [_to_printing_row(p) for p in printings]
+        printing_rows = [
+            _to_printing_row(p, price_map.get((card_name, p.set_code, p.collector_number)))
+            for p in printings
+        ]
         total_quantity = sum(p.total_quantity for p in printing_rows)
 
         decks = deck_map.get(card_name, [])
         checked_out = sum(d.quantity for d in decks)
 
-        price = price_map.get(card_name)
-        price_usd = price.price_usd if price else None
-        line_value = round(price_usd * total_quantity, 2) if price_usd is not None else None
+        price_usd, line_value, has_estimated = _aggregate_pricing(printing_rows)
 
         result.append(
             InventoryRow(
@@ -220,6 +258,7 @@ def list_inventory(
                 line_value=line_value,
                 printing_count=len(printing_rows),
                 has_unresolved=any(p.is_unresolved for p in printing_rows),
+                has_estimated=has_estimated,
                 printings=printing_rows,
             )
         )
@@ -270,7 +309,7 @@ def add_card(
     )
     db.commit()
 
-    return _build_group_row(db, card_name)
+    return build_group_row(db, card_name)
 
 
 def get_owned_quantity(
@@ -347,7 +386,7 @@ def add_one_copy(
     inv.total_quantity += 1
     db.commit()
 
-    return _build_group_row(db, target_name)
+    return build_group_row(db, target_name)
 
 
 def assign_printing(
@@ -397,7 +436,7 @@ def assign_printing(
     target.total_quantity += quantity
     db.commit()
 
-    return _build_group_row(db, card_name)
+    return build_group_row(db, card_name)
 
 
 def adjust_quantity(
@@ -452,7 +491,7 @@ def adjust_quantity(
     inv.total_quantity = new_total_quantity
     db.commit()
 
-    return _build_group_row(db, card_name)
+    return build_group_row(db, card_name)
 
 
 def delete_card(

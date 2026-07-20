@@ -66,6 +66,49 @@ def lookup_card(name: str) -> dict | None:
     return _normalize(card)
 
 
+def lookup_card_printing(name: str, set_code: str, collector_number: str) -> dict | None:
+    """
+    Precise lookup for one exact printing — unlike lookup_card, this
+    doesn't fuzzy-match or pick "the closest": it queries by exact name
+    + collector number. Pokemontcg.io reuses numbers across sets (e.g.
+    every set has a "4"), so when a number match returns more than one
+    printing, ties are broken by matching set_code against that
+    printing's set ptcgoCode/id (case-insensitive — set_code is stored
+    uppercased, see models.py). Used by pokemon_pricing's per-printing
+    refresh, where the caller already knows exactly which printing they
+    own and wants that printing's price, not pokemontcg.io's best guess.
+    """
+    name = name.strip()
+    collector_number = (collector_number or "").strip()
+    if not name or not collector_number:
+        return None
+
+    safe_name = _escape_query_value(name)
+    safe_number = _escape_query_value(collector_number)
+    if not safe_name or not safe_number:
+        return None
+
+    with httpx.Client(follow_redirects=True) as client:
+        cards = _search_cards(client, f'name:"{safe_name}" number:"{safe_number}"')
+
+    if not cards:
+        return None
+
+    if len(cards) > 1 and set_code:
+        set_code_lower = set_code.strip().lower()
+        narrowed = [
+            c for c in cards
+            if set_code_lower in {
+                ((c.get("set") or {}).get("ptcgoCode") or "").lower(),
+                ((c.get("set") or {}).get("id") or "").lower(),
+            }
+        ]
+        if narrowed:
+            cards = narrowed
+
+    return _normalize(cards[0])
+
+
 def _normalize(card: dict) -> dict:
     supertype = card.get("supertype", "")
     subtypes = card.get("subtypes") or []

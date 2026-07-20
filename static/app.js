@@ -800,6 +800,9 @@ async function loadPricingSummary() {
     let detail = data.unpriced_cards > 0
       ? `${data.priced_cards} priced, ${data.unpriced_cards} not yet priced`
       : `${data.priced_cards} cards priced`;
+    if (data.estimated_cards > 0) {
+      detail += ` (${data.estimated_cards} estimated)`;
+    }
 
     if (data.last_updated) {
       const when = new Date(data.last_updated);
@@ -953,12 +956,22 @@ function renderInventoryTable(cards) {
       ? card.decks.map((d) => `${d.quantity}x ${d.deck_name}`).join(", ")
       : "";
 
-    const priceDisplay = card.price_usd != null ? `$${card.price_usd.toFixed(2)}` : "—";
-    const valueDisplay = card.line_value != null ? `$${card.line_value.toFixed(2)}` : "—";
     // A name with more than one printing row can't be edited as a
     // single quantity from the collapsed row — which specific printing
     // would a "+1" apply to? Expand the row to edit a printing directly.
     const multiPrinting = card.printing_count > 1;
+
+    // price_usd is only set by the backend when there's exactly one
+    // printing (otherwise "the" price is ambiguous) — a multi-printing
+    // card shows "multiple" here instead of a number, but line_value
+    // always sums every priced printing regardless of count.
+    const priceDisplay = multiPrinting
+      ? "multiple"
+      : (card.price_usd != null ? `$${card.price_usd.toFixed(2)}` : "—");
+    const valueDisplay = card.line_value != null ? `$${card.line_value.toFixed(2)}` : "—";
+    const estimatedBadge = card.has_estimated
+      ? `<span class="text-amber-400" title="Includes an estimated price — not a fetched price for a specific printing you own">*</span>`
+      : "";
 
     tr.innerHTML = `
       <td class="py-2 pr-2 align-top">
@@ -982,12 +995,12 @@ function renderInventoryTable(cards) {
       </td>
       <td class="py-2 px-2 text-slate-400">${card.checked_out}</td>
       <td class="py-2 px-2 ${card.available > 0 ? "text-emerald-400" : "text-slate-500"}">${card.available}</td>
-      <td class="py-2 px-2 text-slate-300">${priceDisplay}</td>
+      <td class="py-2 px-2 text-slate-300">${priceDisplay}${estimatedBadge}</td>
       <td class="py-2 px-2 text-slate-300">${valueDisplay}</td>
       <td class="py-2 px-2">
         <div class="flex gap-2">
           <button class="qty-save bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded text-xs" ${multiPrinting ? "disabled" : ""}>Save</button>
-          <button class="price-refresh bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-xs" title="Refresh this card's price">$</button>
+          <button class="price-refresh bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded text-xs" title="Refresh this card's price" ${multiPrinting ? "disabled" : ""}>$</button>
           <button class="card-delete bg-rose-900 hover:bg-rose-800 px-2 py-1 rounded text-xs" title="Delete this card and all its printings">Delete</button>
         </div>
       </td>
@@ -1013,30 +1026,15 @@ function renderInventoryTable(cards) {
         const printing = card.printings[0] || { set_code: "", collector_number: "" };
         await saveQuantity(card.card_name, newQty, printing.set_code, printing.collector_number);
       });
+
+      tr.querySelector(".price-refresh").addEventListener("click", async (e) => {
+        const printing = card.printings[0] || { set_code: "", collector_number: "" };
+        await refreshCardPrice(card.card_name, printing.set_code, printing.collector_number, e.target);
+      });
     }
 
     tr.querySelector(".card-delete").addEventListener("click", async () => {
       await deleteCard(card.card_name);
-    });
-
-    tr.querySelector(".price-refresh").addEventListener("click", async (e) => {
-      const btn = e.target;
-      const originalText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = "...";
-      try {
-        const res = await fetch(`${API_BASE}/pricing/refresh-card/${encodeURIComponent(card.card_name)}`, {
-          method: "POST",
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
-        loadInventory();
-        loadPricingSummary();
-      } catch (err) {
-        alert(`Price lookup failed: ${err.message}`);
-        btn.disabled = false;
-        btn.textContent = originalText;
-      }
     });
 
     tbody.appendChild(tr);
@@ -1069,8 +1067,10 @@ function renderPrintingsPanel(card) {
     <thead>
       <tr class="text-left text-slate-500 border-b border-slate-800">
         <th class="py-1 pr-2">Printing</th>
-        <th class="py-1 px-2 w-28">Quantity</th>
-        <th class="py-1 px-2 w-32">Actions</th>
+        <th class="py-1 px-2 w-24">Quantity</th>
+        <th class="py-1 px-2 w-20">Price</th>
+        <th class="py-1 px-2 w-20">Value</th>
+        <th class="py-1 px-2 w-36">Actions</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -1082,6 +1082,12 @@ function renderPrintingsPanel(card) {
       ? `<span class="text-amber-400">Unresolved</span>`
       : `${escapeHtml(p.set_code)} #${escapeHtml(p.collector_number)}`;
 
+    const priceDisplay = p.price_usd != null ? `$${p.price_usd.toFixed(2)}` : "—";
+    const valueDisplay = p.line_value != null ? `$${p.line_value.toFixed(2)}` : "—";
+    const estimatedBadge = p.is_estimated
+      ? `<span class="text-amber-400" title="Estimated — not a fetched price for this exact printing">*</span>`
+      : "";
+
     const row = document.createElement("tr");
     row.className = "border-b border-slate-800/60";
     row.innerHTML = `
@@ -1090,9 +1096,12 @@ function renderPrintingsPanel(card) {
         <input type="number" min="0" value="${p.total_quantity}"
           class="printing-qty-input w-16 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center">
       </td>
+      <td class="py-1 px-2">${priceDisplay}${estimatedBadge}</td>
+      <td class="py-1 px-2">${valueDisplay}</td>
       <td class="py-1 px-2">
         <div class="flex gap-1">
           <button class="printing-save bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 rounded text-[11px]">Save</button>
+          <button class="printing-price-refresh bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded text-[11px]" title="Refresh this printing's price">$</button>
           <button class="printing-delete bg-rose-900 hover:bg-rose-800 px-2 py-0.5 rounded text-[11px]">Delete</button>
         </div>
       </td>
@@ -1106,6 +1115,9 @@ function renderPrintingsPanel(card) {
         return;
       }
       await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number);
+    });
+    row.querySelector(".printing-price-refresh").addEventListener("click", async (e) => {
+      await refreshCardPrice(card.card_name, p.set_code, p.collector_number, e.target);
     });
     row.querySelector(".printing-delete").addEventListener("click", async () => {
       await deletePrinting(card.card_name, p.set_code, p.collector_number);
@@ -1270,6 +1282,27 @@ async function deletePrinting(cardName, setCode, collectorNumber) {
     loadInventory();
   } catch (err) {
     alert(`Failed to delete printing: ${err.message}`);
+  }
+}
+
+async function refreshCardPrice(cardName, setCode, collectorNumber, btn) {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "...";
+  try {
+    const params = new URLSearchParams({ set_code: setCode || "", collector_number: collectorNumber || "" });
+    const res = await fetch(
+      `${API_BASE}/pricing/refresh-card/${encodeURIComponent(cardName)}?${params.toString()}`,
+      { method: "POST" }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+    loadInventory();
+    loadPricingSummary();
+  } catch (err) {
+    alert(`Price lookup failed: ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 

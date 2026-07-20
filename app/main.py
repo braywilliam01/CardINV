@@ -45,6 +45,7 @@ from .inventory_admin import (
     add_one_copy,
     BlockedDeleteError,
     DuplicateCardError,
+    build_group_row,
 )
 from .pricing import refresh_all_prices, refresh_single_price, get_collection_value, get_refresh_status, PricingError
 from .pokemon_pricing import (
@@ -500,6 +501,10 @@ def _printing_to_dict(p):
         "collector_number": p.collector_number,
         "total_quantity": p.total_quantity,
         "is_unresolved": p.is_unresolved,
+        "price_usd": p.price_usd,
+        "price_usd_foil": p.price_usd_foil,
+        "is_estimated": p.is_estimated,
+        "line_value": p.line_value,
     }
 
 
@@ -514,6 +519,7 @@ def _row_to_dict(row):
         "line_value": row.line_value,
         "printing_count": row.printing_count,
         "has_unresolved": row.has_unresolved,
+        "has_estimated": row.has_estimated,
         "printings": [_printing_to_dict(p) for p in row.printings],
     }
 
@@ -700,22 +706,33 @@ def pricing_refresh_bulk(db: Session = Depends(get_db), game: str = Depends(get_
 
 
 @app.post("/api/pricing/refresh-card/{card_name}")
-def pricing_refresh_card(card_name: str, db: Session = Depends(get_db), game: str = Depends(get_current_game)):
-    """On-demand price lookup for a single card, e.g. right after adding it."""
+def pricing_refresh_card(
+    card_name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    db: Session = Depends(get_db),
+    game: str = Depends(get_current_game),
+):
+    """On-demand price lookup for one printing (set_code/collector_number
+    given — the '$' button on an expanded printing row) or the
+    unresolved bucket (omitted — the '$' button on a collapsed/
+    single-printing row). Returns the card's full updated group row so
+    the caller can refresh both the aggregate and per-printing display
+    in one round trip."""
     provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
     try:
-        result = refresh_single_price(db, card_name) if game == "mtg" else pokemon_refresh_single_price(db, card_name)
+        result = (
+            refresh_single_price(db, card_name, set_code, collector_number)
+            if game == "mtg"
+            else pokemon_refresh_single_price(db, card_name, set_code, collector_number)
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
 
     if result is None:
         raise HTTPException(status_code=404, detail=f"No {provider_name} match found for '{card_name}'.")
 
-    return {
-        "card_name": result.card_name,
-        "price_usd": result.price_usd,
-        "price_usd_foil": result.price_usd_foil,
-    }
+    return _row_to_dict(build_group_row(db, card_name))
 
 
 @app.get("/api/pricing/status")

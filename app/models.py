@@ -53,17 +53,26 @@ class CardPrice(Base):
     counts, and a missing row just means "not priced yet" instead of
     needing a sentinel value.
 
-    Still keyed by card_name alone for now — all printings of a name
-    share one price. Per-printing pricing (matching what Scryfall/
-    pokemontcg.io actually return) is a later phase, alongside
-    switching the MTG bulk refresh off Scryfall's deduped-by-name
-    oracle_cards file and onto default_cards (every printing).
+    Keyed the same way as Inventory: (card_name, set_code,
+    collector_number), including the "" / "" unresolved sentinel — a
+    printing's price is its own, so pricing has to follow identity the
+    same way inventory does. A row at the unresolved key is always
+    is_estimated=True: since we don't know which printing those copies
+    actually are, that price is a stand-in (the cheapest known price
+    among the name's other, resolved printings — see
+    price_estimation.py) rather than a real fetched price. A resolved
+    printing's row can also end up is_estimated=True temporarily, if a
+    single-card refresh only had a name to go on (see
+    pricing.refresh_single_price).
     """
     __tablename__ = "card_prices"
 
     card_name = Column(String, primary_key=True)
+    set_code = Column(String, primary_key=True, nullable=False, default="")
+    collector_number = Column(String, primary_key=True, nullable=False, default="")
     price_usd = Column(Float, nullable=True)
     price_usd_foil = Column(Float, nullable=True)
+    is_estimated = Column(Boolean, nullable=False, default=False)
     updated_at = Column(DateTime, nullable=True)
 
 

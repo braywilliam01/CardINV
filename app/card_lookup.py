@@ -97,7 +97,8 @@ def lookup_card(name: str) -> dict | None:
         "price_usd": prices.get("usd"),
         "price_usd_foil": prices.get("usd_foil"),
         "legalities": {fmt: legalities.get(fmt, "not_legal") for fmt in DISPLAY_FORMATS},
-        "scryfall_uri": card.get("scryfall_uri"),
+        "external_url": card.get("scryfall_uri"),
+        "external_url_label": "View on Scryfall",
     }
 
 

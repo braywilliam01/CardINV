@@ -1,8 +1,9 @@
 # Deployment Runbook — Proxmox LXC (venv + systemd)
 
 Docker is intentionally not used here — Docker-in-LXC requires nesting
-(`nesting=1`, sometimes `keyctl=1`) and is redundant overhead for a
-single-app single-user tool. Bare venv + systemd sidesteps all of that
+(`nesting=1`, sometimes `keyctl=1`) and is redundant overhead for an app
+that's still just SQLite files on disk, even with multiple users each
+tracking two separate games. Bare venv + systemd sidesteps all of that
 and keeps backups to a simple file copy.
 
 ## 1. Provision the LXC
@@ -32,10 +33,10 @@ pip install -r requirements.txt
 
 ## 4. Set the session secret
 
-The app is multi-user: each account gets its own database, gated behind a
-login. Sessions are signed cookies, so a real secret is required before
-this goes anywhere reachable — the app runs with an insecure default and
-logs a warning if you skip this.
+The app is multi-user: each account gets its own database (one file per
+game it tracks), gated behind a login. Sessions are signed cookies, so a
+real secret is required before this goes anywhere reachable — the app runs
+with an insecure default and logs a warning if you skip this.
 
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"
@@ -47,6 +48,10 @@ Put the result in an env file the systemd unit will load (step 6):
 # /opt/mtg-inventory/.env
 SESSION_SECRET_KEY=<paste the generated value>
 SESSION_HTTPS_ONLY=true
+# Optional — raises the Pokemon price-refresh rate limit from 1,000 to
+# 20,000 requests/day. Free at https://dev.pokemontcg.io. Not required;
+# a full refresh (~82 paginated requests) fits comfortably without it.
+# POKEMONTCG_API_KEY=<your key>
 ```
 
 `SESSION_HTTPS_ONLY=true` marks the session cookie HTTPS-only — correct once
@@ -67,7 +72,7 @@ loads past login. Ctrl+C once confirmed.
 
 Make sure the user the service runs as owns the directory (needed to write
 into `data/`, which holds the shared accounts database plus one SQLite file
-per user):
+per user per game):
 
 ```bash
 sudo chown -R www-data:www-data /opt/mtg-inventory
@@ -148,7 +153,7 @@ Then apply your usual TLS termination (certbot / Cloudflare) on top.
 **File-level (granular, daily):**
 
 Everything worth backing up lives under `data/` — the shared accounts
-database plus one SQLite file per user:
+database plus one SQLite file per user per game:
 
 ```bash
 # /etc/cron.daily/mtg-inventory-backup
@@ -232,9 +237,10 @@ restoring an individual day's DB without touching the whole container.
 - [ ] `systemctl status mtg-inventory` shows active
 - [ ] App loads via the reverse-proxy URL, not just `127.0.0.1:8000`
 - [ ] `SESSION_SECRET_KEY` is set — no warning about the insecure default in `journalctl -u mtg-inventory`
-- [ ] Registering a new account works, and its data is isolated from any other account (`data/users/<name>/mtg_inventory.db` is a separate file per user)
+- [ ] Registering a new account works, and its data is isolated from any other account (`data/users/<name>/<mtg|pokemon>/inventory.db` is a separate file per user per game)
 - [ ] Logging out and back in preserves that account's data
 - [ ] `/healthz` returns `{"status": "ok"}` without needing a session
+- [ ] The drawer's Magic/Pokemon/Everything switcher works, and each game's data stays isolated from the other's
 - [ ] All three tabs functional (search, decks, bulk upload) once logged in
 - [ ] Cron backup script is executable and cron.daily picks it up
 - [ ] LXC "Start at boot" is enabled in Proxmox UI

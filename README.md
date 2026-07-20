@@ -1,34 +1,52 @@
 # MTG Inventory Manager
 
-FastAPI + SQLite app for managing physical MTG card inventory, decklist
-parsing with fuzzy matching, and deck checkout/check-in tracking. Multi-user:
-each account gets its own isolated database behind a login.
+FastAPI + SQLite app for managing a physical trading card collection —
+**Magic: The Gathering and Pokémon**, kept as two completely separate
+collections per account — with decklist parsing, fuzzy matching, and deck
+checkout/check-in tracking. Multi-user: each account gets its own isolated
+data behind a login.
 
 ## Features
 
 - **Accounts** — username/password login (bcrypt-hashed, signed session
-  cookie). Each user's inventory, decks, prices, and search history live in
-  their own SQLite file — nothing is shared between accounts.
+  cookie). Each user's inventory, decks, prices, and search history are
+  fully isolated from every other user's.
+- **Two games, kept separate** — a switcher in the side drawer (Magic /
+  Pokémon / Everything) swaps your active game; each has its own database
+  file, so nothing about one game's collection touches the other's. The
+  **Everything** screen shows combined stats across both.
 - **Collection Search** — paste a decklist, get it split into "available"
   and "missing" outputs based on current inventory, with fuzzy matching
-  for typos.
+  for typos (Magic only — see Limitations below).
 - **Decks** — one tab for everything deck-related: granular per-card
   add/remove, bulk paste-a-decklist editing, favoriting, renaming, and
   deleting a deck (which checks its cards back into available inventory).
 - **Bulk Update** — upload a ManaBox CSV export to replace your entire
-  inventory in one shot. Deck assignments are preserved across reloads,
-  with warnings surfaced for any assignment left referencing a card no
-  longer in your collection.
-- **Card Search** — fuzzy Scryfall lookup for any card's full printed info
-  (image, oracle text, prices, legalities), with how many you own and a
-  one-click add to inventory.
+  Magic inventory in one shot. Deck assignments are preserved across
+  reloads, with warnings surfaced for any assignment left referencing a
+  card no longer in your collection.
+- **Card Search** — fuzzy lookup for any card's full printed info (image,
+  rules text, prices, legalities) — Scryfall for Magic, pokemontcg.io for
+  Pokémon — with how many you own and a one-click add to inventory.
+
+## Limitations
+
+- Pokémon card search has weaker typo tolerance than Magic's: Scryfall has
+  a dedicated fuzzy-match endpoint, pokemontcg.io doesn't, so Pokémon
+  lookups fall back to exact/substring matching plus local ranking.
+- "Ignore Basic Lands" and the ManaBox CSV bulk importer are Magic-specific
+  concepts with no Pokémon equivalent — they're hidden in Pokémon mode.
 
 ## Stack
 
 - Backend: FastAPI + SQLAlchemy
-- Database: SQLite — a shared `data/users.db` for accounts, plus one file per
-  user at `data/users/<username>/mtg_inventory.db`
+- Database: SQLite — a shared `data/users.db` for accounts, plus one file
+  per (user, game) pair at `data/users/<username>/<mtg|pokemon>/inventory.db`
 - Auth: bcrypt password hashing + Starlette signed-cookie sessions
+- Card data: [Scryfall](https://scryfall.com) (Magic) and
+  [pokemontcg.io](https://pokemontcg.io) (Pokémon) — the latter works
+  keyless for personal use; set `POKEMONTCG_API_KEY` to raise its rate
+  limit from 1,000 to 20,000 requests/day if needed
 - Frontend: vanilla HTML/JS + Tailwind, compiled to a static `static/app.css`
   (not the CDN build — the Play CDN script is fine for local dev but silently
   produces an unstyled page if anything on the network path, e.g. a reverse

@@ -1,5 +1,8 @@
 const API_BASE = "/api";
 const DEFAULT_APP_TAB = "manage";
+const GAME_LABELS = { mtg: "Magic: The Gathering", pokemon: "Pokémon" };
+
+let currentGame = "mtg";
 
 // ---------- Tab switching ----------
 async function activateTab(tabName) {
@@ -47,30 +50,113 @@ document.querySelectorAll(".tab-link").forEach((el) => {
   });
 });
 
-// ---------- Homepage / app view switching ----------
+// ---------- Game switching ----------
+function applyGameUIState() {
+  document.querySelectorAll(".game-switch-btn").forEach((btn) => {
+    const active = btn.dataset.gameSelect === currentGame;
+    btn.classList.toggle("bg-indigo-600", active);
+    btn.classList.toggle("text-white", active);
+    btn.classList.toggle("text-slate-400", !active);
+  });
+  document.querySelectorAll(".game-mtg-only").forEach((el) => {
+    el.classList.toggle("hidden", currentGame !== "mtg");
+  });
+}
+
+async function switchGame(game) {
+  if (game === "everything") {
+    closeDrawer();
+    showEverythingView();
+    return;
+  }
+
+  if (game !== currentGame) {
+    try {
+      await fetch(`${API_BASE}/session/game`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ game }),
+      });
+    } catch (err) {
+      console.error("Failed to switch game:", err);
+      return;
+    }
+    currentGame = game;
+    applyGameUIState();
+  }
+
+  closeDrawer();
+  showHomeView();
+}
+
+document.querySelectorAll(".game-switch-btn").forEach((btn) => {
+  btn.addEventListener("click", () => switchGame(btn.dataset.gameSelect));
+});
+
+// ---------- Homepage / app / everything / settings view switching ----------
+const ALL_VIEW_IDS = ["view-auth", "view-home", "view-app", "view-card", "view-everything", "view-settings"];
+
+function hideAllViews() {
+  ALL_VIEW_IDS.forEach((id) => document.getElementById(id).classList.add("hidden"));
+}
+
 function showHomeView() {
+  hideAllViews();
   document.getElementById("view-home").classList.remove("hidden");
-  document.getElementById("view-app").classList.add("hidden");
-  document.getElementById("view-card").classList.add("hidden");
   loadHomepage();
 }
 
 async function showAppView(tabName) {
-  document.getElementById("view-home").classList.add("hidden");
-  document.getElementById("view-card").classList.add("hidden");
+  hideAllViews();
   document.getElementById("view-app").classList.remove("hidden");
   await activateTab(tabName || DEFAULT_APP_TAB);
 }
 
 function showCardView() {
-  document.getElementById("view-home").classList.add("hidden");
-  document.getElementById("view-app").classList.add("hidden");
+  hideAllViews();
   document.getElementById("view-card").classList.remove("hidden");
 }
+
+function showEverythingView() {
+  hideAllViews();
+  document.getElementById("view-everything").classList.remove("hidden");
+  loadEverythingView();
+}
+
+function showSettingsView() {
+  hideAllViews();
+  document.getElementById("view-settings").classList.remove("hidden");
+  loadSettingsView();
+}
+
+async function loadEverythingView() {
+  try {
+    const res = await fetch(`${API_BASE}/homepage/everything`);
+    const data = await res.json();
+
+    document.getElementById("everything-total-cards").textContent = data.total_quantity.toLocaleString();
+    document.getElementById("everything-unique-cards").textContent = `${data.unique_cards.toLocaleString()} unique`;
+    document.getElementById("everything-deck-count").textContent = data.deck_count.toLocaleString();
+    document.getElementById("everything-collection-value").textContent = `$${data.collection_value_usd.toFixed(2)}`;
+
+    const mtg = data.per_game.mtg;
+    const pokemon = data.per_game.pokemon;
+    document.getElementById("everything-mtg-stats").textContent =
+      `${mtg.total_quantity.toLocaleString()} cards · ${mtg.deck_count} deck${mtg.deck_count === 1 ? "" : "s"} · $${mtg.collection_value_usd.toFixed(2)}`;
+    document.getElementById("everything-pokemon-stats").textContent =
+      `${pokemon.total_quantity.toLocaleString()} cards · ${pokemon.deck_count} deck${pokemon.deck_count === 1 ? "" : "s"} · $${pokemon.collection_value_usd.toFixed(2)}`;
+  } catch (err) {
+    console.error("Failed to load Everything view:", err);
+  }
+}
+
+document.getElementById("everything-mtg-card").addEventListener("click", () => switchGame("mtg"));
+document.getElementById("everything-pokemon-card").addEventListener("click", () => switchGame("pokemon"));
 
 document.getElementById("site-title-btn").addEventListener("click", showHomeView);
 
 async function loadHomepage() {
+  document.getElementById("home-game-label").textContent = GAME_LABELS[currentGame] || currentGame;
   try {
     const [summaryRes, shortcutsRes, recentCardsRes] = await Promise.all([
       fetch(`${API_BASE}/homepage/summary`),
@@ -203,25 +289,17 @@ function renderCardFace(face) {
   `;
 }
 
-let currentCardInventoryName = null;
+function renderPriceLine(card) {
+  const parts = [];
+  if (card.price_usd != null) parts.push(`<div><span class="text-slate-500">USD:</span> $${Number(card.price_usd).toFixed(2)}</div>`);
+  if (card.price_usd_foil != null) parts.push(`<div><span class="text-slate-500">Foil:</span> $${Number(card.price_usd_foil).toFixed(2)}</div>`);
+  if (card.price_eur != null) parts.push(`<div><span class="text-slate-500">EUR:</span> €${Number(card.price_eur).toFixed(2)}</div>`);
+  if (parts.length === 0) return `<div class="text-sm text-slate-500 mt-4">No pricing available.</div>`;
+  return `<div class="flex gap-4 text-sm mt-4 flex-wrap">${parts.join("")}</div>`;
+}
 
-function renderCardDetail(card) {
-  currentCardInventoryName = card.inventory_name;
-
-  const faces = card.faces
-    ? card.faces.map(renderCardFace).join(`<div class="my-4 border-t border-slate-800"></div>`)
-    : renderCardFace(card.primary);
-
-  const priceLine = (card.price_usd != null || card.price_usd_foil != null)
-    ? `
-      <div class="flex gap-4 text-sm mt-4">
-        ${card.price_usd != null ? `<div><span class="text-slate-500">USD:</span> $${Number(card.price_usd).toFixed(2)}</div>` : ""}
-        ${card.price_usd_foil != null ? `<div><span class="text-slate-500">Foil:</span> $${Number(card.price_usd_foil).toFixed(2)}</div>` : ""}
-      </div>
-    `
-    : `<div class="text-sm text-slate-500 mt-4">No pricing available.</div>`;
-
-  const ownedLine = `
+function renderOwnedLine(card) {
+  return `
     <div class="flex items-center gap-3 mt-4">
       <div class="text-sm">
         <span class="text-slate-500"># in inventory:</span>
@@ -232,25 +310,91 @@ function renderCardDetail(card) {
       </button>
     </div>
   `;
+}
 
+function renderMetaLine(card) {
+  return `
+    <div class="text-xs text-slate-500 mt-4 space-y-1">
+      <div>${escapeHtml(card.set_name || "")} (${escapeHtml(card.set_code || "")}) #${escapeHtml(card.collector_number || "")} · ${escapeHtml(card.rarity || "")}</div>
+      ${card.artist ? `<div>Illustrated by ${escapeHtml(card.artist)}</div>` : ""}
+      ${card.external_url ? `<a href="${card.external_url}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">${escapeHtml(card.external_url_label || "View source")} →</a>` : ""}
+    </div>
+  `;
+}
+
+function renderMtgCardBody(card) {
+  return card.faces
+    ? card.faces.map(renderCardFace).join(`<div class="my-4 border-t border-slate-800"></div>`)
+    : renderCardFace(card.primary);
+}
+
+function renderPokemonCardBody(card) {
+  const img = card.primary.image_url
+    ? `<img src="${card.primary.image_url}" alt="${escapeHtml(card.name || "")}" class="w-full max-w-xs rounded-lg border border-slate-700">`
+    : `<div class="w-full max-w-xs aspect-[5/7] rounded-lg border border-slate-700 bg-slate-900 flex items-center justify-center text-slate-600 text-sm">No image</div>`;
+
+  const abilities = (card.abilities || []).map((a) => `
+    <div class="mb-2">
+      <div class="text-sm font-semibold text-indigo-300">${escapeHtml(a.type || "Ability")}: ${escapeHtml(a.name || "")}</div>
+      <div class="text-sm">${escapeHtml(a.text || "")}</div>
+    </div>
+  `).join("");
+
+  const attacks = (card.attacks || []).map((atk) => `
+    <div class="mb-2">
+      <div class="flex items-baseline justify-between gap-2 flex-wrap">
+        <span class="text-sm font-semibold">
+          ${escapeHtml(atk.name || "")}${atk.cost && atk.cost.length ? ` (${atk.cost.map(escapeHtml).join(", ")})` : ""}
+        </span>
+        ${atk.damage ? `<span class="text-sm text-slate-300">${escapeHtml(atk.damage)}</span>` : ""}
+      </div>
+      ${atk.text ? `<div class="text-sm text-slate-400">${escapeHtml(atk.text)}</div>` : ""}
+    </div>
+  `).join("");
+
+  const weaknesses = (card.weaknesses || []).map((w) => `${escapeHtml(w.type)} ${escapeHtml(w.value)}`).join(", ");
+  const resistances = (card.resistances || []).map((r) => `${escapeHtml(r.type)} ${escapeHtml(r.value)}`).join(", ");
+  const retreatCost = (card.retreat_cost || []).length;
+  const typeLine = card.primary.type_line || "";
+  const types = (card.types || []).join(", ");
+
+  return `
+    <div class="flex flex-col sm:flex-row gap-4">
+      ${img}
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap">
+          <h2 class="text-xl font-bold">${escapeHtml(card.name || "")}</h2>
+          ${card.hp ? `<span class="text-slate-400 text-sm">HP ${escapeHtml(card.hp)}</span>` : ""}
+        </div>
+        <div class="text-slate-400 text-sm mb-2">${escapeHtml(typeLine)}${types ? ` · ${escapeHtml(types)}` : ""}</div>
+        ${card.evolves_from ? `<div class="text-xs text-slate-500 mb-2">Evolves from ${escapeHtml(card.evolves_from)}</div>` : ""}
+        ${abilities}
+        ${attacks}
+        ${weaknesses ? `<div class="text-sm text-slate-400 mt-2">Weakness: ${weaknesses}</div>` : ""}
+        ${resistances ? `<div class="text-sm text-slate-400">Resistance: ${resistances}</div>` : ""}
+        ${retreatCost ? `<div class="text-sm text-slate-400">Retreat Cost: ${retreatCost}</div>` : ""}
+        ${card.flavor_text ? `<p class="text-xs italic text-slate-500 mt-2">${escapeHtml(card.flavor_text)}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+let currentCardInventoryName = null;
+
+function renderCardDetail(card) {
+  currentCardInventoryName = card.inventory_name;
+
+  const body = currentGame === "pokemon" ? renderPokemonCardBody(card) : renderMtgCardBody(card);
   const legalities = Object.entries(card.legalities || {})
     .map(([fmt, status]) => legalityBadge(fmt, status))
     .join(" ");
 
-  const meta = `
-    <div class="text-xs text-slate-500 mt-4 space-y-1">
-      <div>${escapeHtml(card.set_name || "")} (${escapeHtml(card.set_code || "")}) #${escapeHtml(card.collector_number || "")} · ${escapeHtml(card.rarity || "")}</div>
-      ${card.artist ? `<div>Illustrated by ${escapeHtml(card.artist)}</div>` : ""}
-      ${card.scryfall_uri ? `<a href="${card.scryfall_uri}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">View on Scryfall →</a>` : ""}
-    </div>
-  `;
-
   document.getElementById("card-detail-content").innerHTML = `
-    ${faces}
-    ${priceLine}
-    ${ownedLine}
+    ${body}
+    ${renderPriceLine(card)}
+    ${renderOwnedLine(card)}
     <div class="flex flex-wrap gap-2 mt-3">${legalities}</div>
-    ${meta}
+    ${renderMetaLine(card)}
   `;
 
   document.getElementById("card-add-to-inventory-btn").addEventListener("click", addCurrentCardToInventory);
@@ -657,8 +801,8 @@ async function loadPricingSummary() {
 
 function formatStage(stage) {
   const labels = {
-    fetching_index: "Contacting Scryfall...",
-    downloading: "Downloading bulk price data...",
+    fetching_index: "Contacting price API...",
+    downloading: "Downloading price data...",
     matching: "Matching against your collection...",
     committing: "Saving prices...",
   };
@@ -702,8 +846,11 @@ document.getElementById("refresh-prices-btn").addEventListener("click", async ()
     loadInventory();
     loadPricingSummary();
 
-    if (data.skipped_errors > 0) {
-      alert(`Price refresh complete, but ${data.skipped_errors} card(s) were skipped due to bad data from Scryfall.`);
+    if (data.skipped_errors > 0 || data.skipped_pages > 0) {
+      const parts = [];
+      if (data.skipped_errors > 0) parts.push(`${data.skipped_errors} card(s) skipped due to bad price data`);
+      if (data.skipped_pages > 0) parts.push(`${data.skipped_pages} page(s) of the catalog couldn't be fetched`);
+      alert(`Price refresh complete, but ${parts.join(" and ")} — try refreshing again later to fill in the gaps.`);
     }
   } catch (err) {
     alert(`Price refresh failed: ${err.message}`);
@@ -1461,20 +1608,24 @@ document.getElementById("output-add-to-deck-btn").addEventListener("click", asyn
 });
 
 // ---------- Auth ----------
+let isAdmin = false;
+
 function showAuthView() {
   document.getElementById("menu-btn").classList.add("hidden");
   document.getElementById("site-title-btn").classList.add("hidden");
-  document.getElementById("view-home").classList.add("hidden");
-  document.getElementById("view-app").classList.add("hidden");
-  document.getElementById("view-card").classList.add("hidden");
+  hideAllViews();
   document.getElementById("view-auth").classList.remove("hidden");
 }
 
-function onAuthenticated(username) {
+function onAuthenticated(username, game, admin) {
   document.getElementById("menu-btn").classList.remove("hidden");
   document.getElementById("site-title-btn").classList.remove("hidden");
   document.getElementById("view-auth").classList.add("hidden");
   document.getElementById("drawer-username").textContent = username;
+  document.getElementById("drawer-admin-badge").classList.toggle("hidden", !admin);
+  isAdmin = !!admin;
+  currentGame = game || "mtg";
+  applyGameUIState();
   loadDeckList(); // populate the Search/Add-to-Deck datalist
   showHomeView();
 }
@@ -1484,7 +1635,7 @@ async function checkAuthAndInit() {
     const res = await fetch(`${API_BASE}/auth/me`);
     if (res.ok) {
       const data = await res.json();
-      onAuthenticated(data.username);
+      onAuthenticated(data.username, data.game, data.is_admin);
     } else {
       showAuthView();
     }
@@ -1529,7 +1680,7 @@ document.getElementById("auth-submit-btn").addEventListener("click", async () =>
     if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
 
     document.getElementById("auth-password").value = "";
-    onAuthenticated(data.username);
+    onAuthenticated(data.username, undefined, data.is_admin);
   } catch (err) {
     msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
   } finally {
@@ -1550,5 +1701,116 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
     location.reload();
   }
 });
+
+// ---------- Settings ----------
+document.getElementById("settings-nav-btn").addEventListener("click", () => {
+  closeDrawer();
+  showSettingsView();
+});
+
+function loadSettingsView() {
+  document.getElementById("settings-current-password").value = "";
+  document.getElementById("settings-new-password").value = "";
+  document.getElementById("settings-confirm-password").value = "";
+  document.getElementById("settings-password-msg").textContent = "";
+
+  const adminPanel = document.getElementById("settings-admin-panel");
+  adminPanel.classList.toggle("hidden", !isAdmin);
+  if (isAdmin) loadAdminUsersList();
+}
+
+document.getElementById("settings-change-password-btn").addEventListener("click", async () => {
+  const currentPassword = document.getElementById("settings-current-password").value;
+  const newPassword = document.getElementById("settings-new-password").value;
+  const confirmPassword = document.getElementById("settings-confirm-password").value;
+  const msgEl = document.getElementById("settings-password-msg");
+  const btn = document.getElementById("settings-change-password-btn");
+
+  if (!currentPassword || !newPassword) {
+    msgEl.innerHTML = `<span class="text-rose-400">Fill in both password fields.</span>`;
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    msgEl.innerHTML = `<span class="text-rose-400">New password and confirmation don't match.</span>`;
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Updating...";
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/password`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    document.getElementById("settings-current-password").value = "";
+    document.getElementById("settings-new-password").value = "";
+    document.getElementById("settings-confirm-password").value = "";
+    msgEl.innerHTML = `<span class="text-emerald-400">Password updated.</span>`;
+  } catch (err) {
+    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});
+
+async function loadAdminUsersList() {
+  const container = document.getElementById("settings-users-list");
+  container.innerHTML = `<div class="text-sm text-slate-500">Loading...</div>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/admin/users`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    container.innerHTML = "";
+    data.users.forEach((u) => {
+      const row = document.createElement("div");
+      row.className = "flex items-center justify-between gap-2 bg-slate-800 rounded-lg px-3 py-2";
+      row.innerHTML = `
+        <div class="text-sm">
+          ${escapeHtml(u.username)}
+          ${u.is_admin ? `<span class="ml-1 px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-400 text-[10px] uppercase tracking-wide align-middle">Admin</span>` : ""}
+        </div>
+        <button class="admin-reset-btn bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg text-xs font-medium">
+          Reset Password
+        </button>
+      `;
+      row.querySelector(".admin-reset-btn").addEventListener("click", () => resetUserPassword(u.username));
+      container.appendChild(row);
+    });
+  } catch (err) {
+    container.innerHTML = `<div class="text-sm text-rose-400">Failed to load users: ${err.message}</div>`;
+  }
+}
+
+async function resetUserPassword(username) {
+  const newPassword = prompt(`New password for '${username}':`);
+  if (newPassword === null) return; // cancelled
+  if (newPassword.trim().length < 8) {
+    alert("Password must be at least 8 characters.");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/admin/users/${encodeURIComponent(username)}/reset-password`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_password: newPassword.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    alert(`Password for '${username}' has been reset. Let them know the new password directly.`);
+  } catch (err) {
+    alert(`Failed to reset password: ${err.message}`);
+  }
+}
 
 checkAuthAndInit();

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
 
 from .database import AuthBase
 
@@ -14,4 +14,5 @@ class User(AuthBase):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, unique=True, nullable=False, index=True)
     password_hash = Column(String, nullable=False)
+    is_admin = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False)

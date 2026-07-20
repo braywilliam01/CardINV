@@ -1,10 +1,11 @@
 from datetime import datetime
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Inventory, DeckAssignment, DeckMeta
 from .pricing import get_collection_value
+from .database import get_user_engine, GAMES
 
 MAX_DECK_SHORTCUTS = 3
 
@@ -31,6 +32,34 @@ def get_summary(db: Session) -> dict:
         "total_quantity": total_quantity,
         "deck_count": deck_count,
         "collection_value_usd": value["total_value_usd"],
+    }
+
+
+def get_everything_summary(username: str) -> dict:
+    """
+    Combined stats across every game for the 'Everything' homescreen —
+    opens each game's per-user database directly (bypassing the
+    single-active-game Depends(get_db)) rather than merging tables,
+    since each game already lives in its own file. Short-lived,
+    manually-closed sessions here since this runs outside a normal
+    request's Depends(get_db) lifecycle.
+    """
+    per_game = {}
+    for game in GAMES:
+        engine = get_user_engine(username, game)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+        try:
+            per_game[game] = get_summary(db)
+        finally:
+            db.close()
+
+    return {
+        "total_quantity": sum(s["total_quantity"] for s in per_game.values()),
+        "unique_cards": sum(s["unique_cards"] for s in per_game.values()),
+        "deck_count": sum(s["deck_count"] for s in per_game.values()),
+        "collection_value_usd": round(sum(s["collection_value_usd"] for s in per_game.values()), 2),
+        "per_game": per_game,
     }
 
 

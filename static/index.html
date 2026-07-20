@@ -25,6 +25,22 @@
     <span class="font-bold text-slate-100">Menu</span>
     <button id="drawer-close-btn" type="button" aria-label="Close menu" class="text-slate-400 hover:text-slate-200 text-xl leading-none">&times;</button>
   </div>
+
+  <div class="mb-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide mb-2 px-1">Game</div>
+    <div class="grid grid-cols-3 gap-1 bg-slate-950 rounded-lg p-1">
+      <button type="button" data-game-select="everything" class="game-switch-btn px-2 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-slate-200">
+        Everything
+      </button>
+      <button type="button" data-game-select="mtg" class="game-switch-btn px-2 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-slate-200">
+        Magic
+      </button>
+      <button type="button" data-game-select="pokemon" class="game-switch-btn px-2 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-slate-200">
+        Pokemon
+      </button>
+    </div>
+  </div>
+
   <div class="flex flex-col gap-1">
     <button type="button" data-nav="home" class="nav-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
       Homepage
@@ -39,10 +55,15 @@
     <button type="button" data-tab="search" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
       Collection Search
     </button>
+    <div class="border-t border-slate-800 my-2"></div>
+    <button id="settings-nav-btn" type="button" class="text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
+      Settings
+    </button>
   </div>
   <div class="border-t border-slate-800 my-2"></div>
   <div class="px-3 py-2 text-xs text-slate-500">
     Logged in as <span id="drawer-username" class="text-slate-300 font-medium"></span>
+    <span id="drawer-admin-badge" class="hidden ml-1 px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-400 text-[10px] uppercase tracking-wide align-middle">Admin</span>
   </div>
   <button id="logout-btn" type="button" class="text-left px-3 py-2 rounded-lg text-sm font-medium text-rose-400 hover:bg-slate-800">
     Log Out
@@ -79,6 +100,7 @@
 
   <!-- ===================== HOMEPAGE ===================== -->
   <section id="view-home" class="hidden">
+    <div id="home-game-label" class="text-sm text-slate-400 mb-4"></div>
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
         <div class="text-xs text-slate-500 uppercase tracking-wide">Total Cards</div>
@@ -117,6 +139,72 @@
     <div id="home-deck-shortcuts" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3"></div>
     <div id="home-deck-shortcuts-empty" class="text-slate-500 text-sm mb-6 hidden">
       No decks yet — check some cards out to a deck to see shortcuts here.
+    </div>
+  </section>
+
+  <!-- ===================== EVERYTHING (COMBINED) ===================== -->
+  <section id="view-everything" class="hidden">
+    <h2 class="text-lg font-semibold mb-4">Everything</h2>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+      <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+        <div class="text-xs text-slate-500 uppercase tracking-wide">Total Cards</div>
+        <div id="everything-total-cards" class="text-2xl font-bold text-slate-100 mt-1">—</div>
+        <div id="everything-unique-cards" class="text-xs text-slate-500 mt-1"></div>
+      </div>
+      <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+        <div class="text-xs text-slate-500 uppercase tracking-wide">Decks</div>
+        <div id="everything-deck-count" class="text-2xl font-bold text-slate-100 mt-1">—</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+        <div class="text-xs text-slate-500 uppercase tracking-wide">Collection Value</div>
+        <div id="everything-collection-value" class="text-2xl font-bold text-emerald-400 mt-1">—</div>
+      </div>
+    </div>
+
+    <h3 class="font-semibold mb-3 text-sm text-slate-300">By Game</h3>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <button id="everything-mtg-card" type="button"
+        class="bg-slate-900 border border-slate-700 hover:border-indigo-500 rounded-lg p-4 text-left transition-colors">
+        <div class="font-semibold text-slate-100 mb-2">Magic: The Gathering</div>
+        <div id="everything-mtg-stats" class="text-sm text-slate-400"></div>
+      </button>
+      <button id="everything-pokemon-card" type="button"
+        class="bg-slate-900 border border-slate-700 hover:border-indigo-500 rounded-lg p-4 text-left transition-colors">
+        <div class="font-semibold text-slate-100 mb-2">Pokémon</div>
+        <div id="everything-pokemon-stats" class="text-sm text-slate-400"></div>
+      </button>
+    </div>
+  </section>
+
+  <!-- ===================== SETTINGS ===================== -->
+  <section id="view-settings" class="hidden max-w-md">
+    <h2 class="text-lg font-semibold mb-4">Settings</h2>
+
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
+      <h3 class="font-semibold mb-3 text-sm text-slate-300">Change Password</h3>
+
+      <label class="block text-sm text-slate-400 mb-1">Current password</label>
+      <input id="settings-current-password" type="password" autocomplete="current-password"
+        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-3">
+
+      <label class="block text-sm text-slate-400 mb-1">New password</label>
+      <input id="settings-new-password" type="password" autocomplete="new-password"
+        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-3">
+
+      <label class="block text-sm text-slate-400 mb-1">Confirm new password</label>
+      <input id="settings-confirm-password" type="password" autocomplete="new-password"
+        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-4">
+
+      <button id="settings-change-password-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
+        Update Password
+      </button>
+      <div id="settings-password-msg" class="text-sm mt-2"></div>
+    </div>
+
+    <div id="settings-admin-panel" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4">
+      <h3 class="font-semibold mb-3 text-sm text-slate-300">Manage Users</h3>
+      <div id="settings-users-list" class="space-y-2"></div>
     </div>
   </section>
 
@@ -165,7 +253,7 @@
       </button>
     </div>
 
-    <label class="flex items-center gap-2 text-sm text-slate-400 mb-4 cursor-pointer w-fit">
+    <label class="game-mtg-only flex items-center gap-2 text-sm text-slate-400 mb-4 cursor-pointer w-fit">
       <input id="search-ignore-basics" type="checkbox" checked
         class="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-950">
       Ignore Basic Lands (Plains, Island, Swamp, Mountain, Forest)
@@ -219,7 +307,7 @@
         Deck assignments will be preserved.
       </div>
 
-      <label class="flex items-center gap-2 text-sm text-slate-400 mb-4 cursor-pointer w-fit">
+      <label class="game-mtg-only flex items-center gap-2 text-sm text-slate-400 mb-4 cursor-pointer w-fit">
         <input id="bulk-ignore-basics" type="checkbox" checked
           class="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-950">
         Ignore Basic Lands (Plains, Island, Swamp, Mountain, Forest)
@@ -272,7 +360,7 @@
         class="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"
         placeholder="2 Lightning Bolt&#10;1 Sol Ring"></textarea>
 
-      <label class="flex items-center gap-2 text-sm text-slate-400 mb-3 cursor-pointer w-fit">
+      <label class="game-mtg-only flex items-center gap-2 text-sm text-slate-400 mb-3 cursor-pointer w-fit">
         <input id="bulk-inv-ignore-basics" type="checkbox" checked
           class="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-950">
         Ignore Basic Lands (Plains, Island, Swamp, Mountain, Forest)

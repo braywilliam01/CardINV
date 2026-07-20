@@ -14,8 +14,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mtg_inventory.main")
 
-from .database import auth_engine, AuthBase, get_auth_db
-from .auth import get_db, get_current_username, register_user, authenticate_user
+from .database import auth_engine, AuthBase, get_auth_db, GAMES
+from .auth import (
+    get_db,
+    get_current_username,
+    get_current_game,
+    get_current_admin,
+    register_user,
+    authenticate_user,
+    change_password,
+    admin_reset_password,
+    list_users,
+)
+from .auth_models import User
 from .models import DeckAssignment, Inventory
 from .search import split_by_availability
 from .checkout import checkout_cards, checkin_cards, sync_checkout, sync_checkin, get_deck_cards
@@ -33,9 +44,15 @@ from .inventory_admin import (
     DuplicateCardError,
 )
 from .pricing import refresh_all_prices, refresh_single_price, get_collection_value, get_refresh_status, PricingError
-from .homepage import get_summary, get_deck_shortcuts, get_deck_meta, set_favorite
+from .pokemon_pricing import (
+    refresh_all_prices as pokemon_refresh_all_prices,
+    refresh_single_price as pokemon_refresh_single_price,
+    get_refresh_status as pokemon_get_refresh_status,
+)
+from .homepage import get_summary, get_deck_shortcuts, get_deck_meta, set_favorite, get_everything_summary
 from .deck_admin import rename_deck, delete_deck, DeckNotFoundError, DuplicateDeckError
 from .card_lookup import lookup_card, record_card_view, get_recent_cards
+from .pokemon_lookup import lookup_card as pokemon_lookup_card
 
 app = FastAPI(title="MTG Inventory Manager")
 
@@ -54,6 +71,30 @@ app.add_middleware(
 )
 
 AuthBase.metadata.create_all(bind=auth_engine)
+
+
+def _migrate_is_admin_column() -> None:
+    """
+    is_admin was added to the User model after this table could
+    already exist on a real deployment — create_all() only creates
+    *missing* tables, it doesn't alter existing ones, so this adds the
+    column by hand if it's not there yet. Since no account created
+    before this existed was ever flagged admin, it also promotes the
+    earliest-registered user (there's always at least one, or there
+    are no users yet and this is a no-op) so there's still someone who
+    can reset another account's password.
+    """
+    with auth_engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()}
+        if "is_admin" in columns:
+            return
+        conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
+        conn.execute(text("UPDATE users SET is_admin = 1 WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)"))
+        conn.commit()
+        logger.info("Migrated users table: added is_admin, promoted earliest account to admin.")
+
+
+_migrate_is_admin_column()
 
 
 @app.get("/healthz")
@@ -87,7 +128,7 @@ def auth_register(req: RegisterRequest, request: Request, auth_db: Session = Dep
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     request.session["username"] = user.username
-    return {"username": user.username}
+    return {"username": user.username, "is_admin": user.is_admin}
 
 
 @app.post("/api/auth/login")
@@ -96,7 +137,7 @@ def auth_login(req: LoginRequest, request: Request, auth_db: Session = Depends(g
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     request.session["username"] = user.username
-    return {"username": user.username}
+    return {"username": user.username, "is_admin": user.is_admin}
 
 
 @app.post("/api/auth/logout")
@@ -106,8 +147,88 @@ def auth_logout(request: Request):
 
 
 @app.get("/api/auth/me")
-def auth_me(username: str = Depends(get_current_username)):
-    return {"username": username}
+def auth_me(
+    username: str = Depends(get_current_username),
+    game: str = Depends(get_current_game),
+    auth_db: Session = Depends(get_auth_db),
+):
+    user = auth_db.query(User).filter(User.username == username).one_or_none()
+    return {"username": username, "game": game, "is_admin": bool(user and user.is_admin)}
+
+
+class SetGameRequest(BaseModel):
+    game: str
+
+
+@app.put("/api/session/game")
+def session_set_game(
+    req: SetGameRequest, request: Request, username: str = Depends(get_current_username)
+):
+    """Switches the active game for the current session — everything
+    behind Depends(get_db) (Manage Collection, Decks, Search, Card
+    Search, pricing) is scoped to whichever game is set here."""
+    if req.game not in GAMES:
+        raise HTTPException(status_code=400, detail=f"game must be one of {GAMES}.")
+    request.session["game"] = req.game
+    return {"game": req.game}
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.put("/api/auth/password")
+def auth_change_password(
+    req: ChangePasswordRequest,
+    username: str = Depends(get_current_username),
+    auth_db: Session = Depends(get_auth_db),
+):
+    """Settings tab's self-service password change — always requires
+    the current password, admins included."""
+    try:
+        change_password(auth_db, username, req.current_password, req.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"changed": True}
+
+
+# ---------------------------------------------------------------------
+# Admin — user management. Every route here requires get_current_admin,
+# which 403s anyone whose account isn't flagged is_admin.
+# ---------------------------------------------------------------------
+@app.get("/api/admin/users")
+def admin_list_users(
+    admin_username: str = Depends(get_current_admin), auth_db: Session = Depends(get_auth_db)
+):
+    users = list_users(auth_db)
+    return {
+        "users": [
+            {"username": u.username, "is_admin": u.is_admin, "created_at": u.created_at.isoformat()}
+            for u in users
+        ]
+    }
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str
+
+
+@app.put("/api/admin/users/{target_username}/reset-password")
+def admin_reset_user_password(
+    target_username: str,
+    req: AdminResetPasswordRequest,
+    admin_username: str = Depends(get_current_admin),
+    auth_db: Session = Depends(get_auth_db),
+):
+    """Lets an admin set a new password for another account directly —
+    no current-password check, since the point is helping someone
+    who's locked out. Relay the new password to them out of band."""
+    try:
+        admin_reset_password(auth_db, target_username, req.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"reset": target_username}
 
 
 # ---------------------------------------------------------------------
@@ -246,6 +367,14 @@ def homepage_summary(db: Session = Depends(get_db)):
     return get_summary(db)
 
 
+@app.get("/api/homepage/everything")
+def homepage_everything(username: str = Depends(get_current_username)):
+    """The combined 'Everything' homescreen — stats across every game,
+    not just the currently-active one. Deliberately doesn't use
+    Depends(get_db), which only ever has access to one game at a time."""
+    return get_everything_summary(username)
+
+
 @app.get("/api/homepage/deck-shortcuts")
 def homepage_deck_shortcuts(db: Session = Depends(get_db)):
     """Up to 3 decks for the Homepage quick-access buttons — favorites
@@ -254,20 +383,22 @@ def homepage_deck_shortcuts(db: Session = Depends(get_db)):
 
 
 @app.get("/api/card-lookup")
-def card_lookup(name: str, db: Session = Depends(get_db)):
-    """Homepage's Card Search — fuzzy Scryfall lookup for one card's
-    full printed info (image, oracle text, prices, legalities), plus
-    how many copies are in your inventory. The only local writes are
-    bumping the "Last Viewed" cache; use POST /api/inventory/quick-add
-    to actually add a copy."""
+def card_lookup(name: str, db: Session = Depends(get_db), game: str = Depends(get_current_game)):
+    """Homepage's Card Search — fuzzy lookup (Scryfall for MTG,
+    pokemontcg.io for Pokemon, chosen by the session's active game) for
+    one card's full printed info, plus how many copies are in your
+    inventory. The only local writes are bumping the "Last Viewed"
+    cache; use POST /api/inventory/quick-add to actually add a copy."""
     if not name.strip():
         raise HTTPException(status_code=400, detail="Enter a card name to search.")
+
+    provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
     try:
-        result = lookup_card(name.strip())
+        result = lookup_card(name.strip()) if game == "mtg" else pokemon_lookup_card(name.strip())
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach Scryfall: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
     if result is None:
-        raise HTTPException(status_code=404, detail=f"No Scryfall match found for '{name}'.")
+        raise HTTPException(status_code=404, detail=f"No {provider_name} match found for '{name}'.")
     record_card_view(db, result)
     result["owned_quantity"] = get_owned_quantity(db, result["inventory_name"])
     return result
@@ -457,37 +588,40 @@ def bulk_remove(req: BulkInventoryRequest, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------
-# Pricing (Scryfall) — bulk refresh for weekly/on-demand use, plus
-# single-card on-demand lookups.
+# Pricing — bulk refresh for weekly/on-demand use, plus single-card
+# on-demand lookups. Scryfall for MTG, pokemontcg.io for Pokemon,
+# chosen by the session's active game.
 # ---------------------------------------------------------------------
 @app.post("/api/pricing/refresh-bulk")
-def pricing_refresh_bulk(db: Session = Depends(get_db)):
+def pricing_refresh_bulk(db: Session = Depends(get_db), game: str = Depends(get_current_game)):
     """
-    Downloads Scryfall's bulk price data once and updates every card in
-    inventory. This is the endpoint to hit from a weekly cron job
-    (see DEPLOY.md) or an on-demand "refresh all prices" button — it's
-    a single external request regardless of collection size, so it's
-    safe to trigger manually as often as you like too.
+    Refreshes prices for every card in inventory in one go — MTG via
+    Scryfall's single bulk-data file, Pokemon via paginating
+    pokemontcg.io's catalog (no bulk-price file exists there). This is
+    the endpoint to hit from a weekly cron job (see DEPLOY.md) or an
+    on-demand "refresh all prices" button.
     """
+    provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
     try:
-        result = refresh_all_prices(db)
+        result = refresh_all_prices(db) if game == "mtg" else pokemon_refresh_all_prices(db)
     except PricingError as e:
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach Scryfall: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
     return result
 
 
 @app.post("/api/pricing/refresh-card/{card_name}")
-def pricing_refresh_card(card_name: str, db: Session = Depends(get_db)):
+def pricing_refresh_card(card_name: str, db: Session = Depends(get_db), game: str = Depends(get_current_game)):
     """On-demand price lookup for a single card, e.g. right after adding it."""
+    provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
     try:
-        result = refresh_single_price(db, card_name)
+        result = refresh_single_price(db, card_name) if game == "mtg" else pokemon_refresh_single_price(db, card_name)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach Scryfall: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"No Scryfall match found for '{card_name}'.")
+        raise HTTPException(status_code=404, detail=f"No {provider_name} match found for '{card_name}'.")
 
     return {
         "card_name": result.card_name,
@@ -497,14 +631,14 @@ def pricing_refresh_card(card_name: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/pricing/status")
-def pricing_status():
+def pricing_status(game: str = Depends(get_current_game)):
     """
     Check progress of an in-flight or most recent bulk refresh without
     waiting on the (blocking) POST /api/pricing/refresh-bulk request —
-    useful from a second terminal (`curl http://127.0.0.1:8000/api/pricing/status`)
-    or for the UI to poll while a refresh is running.
+    useful from a second terminal or for the UI to poll while a refresh
+    is running. Each game tracks its own refresh status.
     """
-    return get_refresh_status()
+    return get_refresh_status() if game == "mtg" else pokemon_get_refresh_status()
 
 
 @app.get("/api/pricing/summary")

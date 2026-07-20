@@ -30,6 +30,12 @@ class InventoryRow:
     line_value: float | None = None
 
 
+@dataclass
+class InventoryPage:
+    rows: list[InventoryRow]
+    total_count: int
+
+
 class BlockedDeleteError(Exception):
     """Raised when a delete/reduce would leave deck_assignments dangling
     and the caller hasn't opted in via force=True."""
@@ -59,17 +65,48 @@ def _decks_for(db: Session, card_name: str) -> list[DeckHold]:
     return [DeckHold(deck_name=r.deck_name, quantity=r.quantity) for r in rows]
 
 
-def list_inventory(db: Session, search: str | None = None) -> list[InventoryRow]:
+def list_inventory(
+    db: Session, search: str | None = None, page: int = 1, page_size: int = 50
+) -> InventoryPage:
+    """
+    Returns one page of inventory rows plus the total match count (for
+    the Manage Collection tab's pagination controls). Batches prices
+    and deck assignments into two queries scoped to just this page's
+    card names, rather than one query per row — with a large collection
+    this used to mean a query per card just to render the table.
+    """
     query = db.query(Inventory)
     if search:
         query = query.filter(Inventory.card_name.ilike(f"%{search}%"))
 
-    rows = query.order_by(Inventory.card_name.asc()).all()
-    price_map = {p.card_name: p for p in db.query(CardPrice).all()}
+    total_count = query.count()
+
+    rows = (
+        query.order_by(Inventory.card_name.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    card_names = [r.card_name for r in rows]
+
+    price_map = {}
+    deck_map: dict[str, list[DeckHold]] = {}
+    if card_names:
+        price_map = {
+            p.card_name: p
+            for p in db.query(CardPrice).filter(CardPrice.card_name.in_(card_names)).all()
+        }
+        for a in (
+            db.query(DeckAssignment)
+            .filter(DeckAssignment.card_name.in_(card_names), DeckAssignment.quantity > 0)
+            .all()
+        ):
+            deck_map.setdefault(a.card_name, []).append(DeckHold(deck_name=a.deck_name, quantity=a.quantity))
 
     result = []
     for inv in rows:
-        decks = _decks_for(db, inv.card_name)
+        decks = deck_map.get(inv.card_name, [])
         checked_out = sum(d.quantity for d in decks)
 
         price = price_map.get(inv.card_name)
@@ -87,24 +124,80 @@ def list_inventory(db: Session, search: str | None = None) -> list[InventoryRow]
                 line_value=line_value,
             )
         )
-    return result
+    return InventoryPage(rows=result, total_count=total_count)
 
 
 def add_card(db: Session, card_name: str, total_quantity: int) -> InventoryRow:
+    """
+    Blocks case-insensitive exact duplicates ("sol ring" is caught as
+    the same card as an existing "Sol Ring") without fuzzy matching.
+    Deliberately not the same check as bulk_add_cards/add_one_copy: a
+    fuzzy threshold that's fine when the worst case is "merges into the
+    closest match" is too aggressive once the action is "block card
+    creation entirely" — plenty of distinct real card names (different
+    printings, "Elite Vanguard" vs "Elite Guardmage", etc.) are only a
+    few characters apart and would otherwise get wrongly rejected.
+    """
     card_name = card_name.strip()
     if not card_name:
         raise ValueError("Card name cannot be empty.")
     if total_quantity < 0:
         raise ValueError("Quantity cannot be negative.")
 
-    existing = db.query(Inventory).filter(Inventory.card_name == card_name).one_or_none()
+    existing = db.query(Inventory).filter(Inventory.card_name.ilike(card_name)).one_or_none()
     if existing:
-        raise DuplicateCardError(card_name)
+        raise DuplicateCardError(existing.card_name)
 
     db.add(Inventory(card_name=card_name, total_quantity=total_quantity))
     db.commit()
 
     return InventoryRow(card_name=card_name, total_quantity=total_quantity, checked_out=0, available=total_quantity)
+
+
+def get_owned_quantity(db: Session, card_name: str) -> int:
+    """
+    Fuzzy-matches card_name against inventory (same threshold as bulk
+    add/remove) and returns how many copies are owned — 0 if there's no
+    close match. Powers Card Search's "# in inventory" figure.
+    """
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
+    if matched_name is None:
+        return 0
+    inv = db.query(Inventory).filter(Inventory.card_name == matched_name).one()
+    return inv.total_quantity
+
+
+def add_one_copy(db: Session, card_name: str) -> InventoryRow:
+    """
+    Increments an existing (fuzzy-matched) inventory row by one, or
+    creates a new one with quantity 1 if there's no close match. Powers
+    Card Search's "Add to Inventory" button — always adds exactly one
+    copy per click, mirroring the qty-nudge +1 buttons in Manage
+    Collection rather than asking for a quantity up front.
+    """
+    card_name = card_name.strip()
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
+
+    if matched_name is None:
+        db.add(Inventory(card_name=card_name, total_quantity=1))
+        db.commit()
+        return InventoryRow(card_name=card_name, total_quantity=1, checked_out=0, available=1)
+
+    inv = db.query(Inventory).filter(Inventory.card_name == matched_name).one()
+    inv.total_quantity += 1
+    db.commit()
+
+    decks = _decks_for(db, matched_name)
+    checked_out = sum(d.quantity for d in decks)
+    return InventoryRow(
+        card_name=matched_name,
+        total_quantity=inv.total_quantity,
+        checked_out=checked_out,
+        available=inv.total_quantity - checked_out,
+        decks=decks,
+    )
 
 
 def adjust_quantity(db: Session, card_name: str, new_total_quantity: int) -> InventoryRow:

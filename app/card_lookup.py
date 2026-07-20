@@ -76,8 +76,17 @@ def lookup_card(name: str) -> dict | None:
     prices = card.get("prices", {}) or {}
     legalities = card.get("legalities", {}) or {}
 
+    # Inventory (and ManaBox exports) track a double-faced or split/
+    # adventure card under its front face's name alone, never Scryfall's
+    # combined "X // Y" — so this is deliberately always the front face,
+    # not `primary["name"]` (which is the combined name for split/
+    # adventure cards, since those don't hit the faces_have_own_images
+    # branch above).
+    inventory_name = raw_faces[0].get("name") if raw_faces else card.get("name")
+
     return {
         "name": card.get("name"),
+        "inventory_name": inventory_name,
         "faces": faces,  # None for single-faced cards, else [front, back, ...]
         "primary": primary,  # top-level info, or the front face for double-faced cards
         "set_name": card.get("set_name"),

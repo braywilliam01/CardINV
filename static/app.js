@@ -204,7 +204,11 @@ function renderCardFace(face) {
   `;
 }
 
+let currentCardInventoryName = null;
+
 function renderCardDetail(card) {
+  currentCardInventoryName = card.inventory_name;
+
   const faces = card.faces
     ? card.faces.map(renderCardFace).join(`<div class="my-4 border-t border-slate-800"></div>`)
     : renderCardFace(card.primary);
@@ -217,6 +221,18 @@ function renderCardDetail(card) {
       </div>
     `
     : `<div class="text-sm text-slate-500 mt-4">No pricing available.</div>`;
+
+  const ownedLine = `
+    <div class="flex items-center gap-3 mt-4">
+      <div class="text-sm">
+        <span class="text-slate-500"># in inventory:</span>
+        <span id="card-owned-qty" class="font-semibold text-slate-100">${card.owned_quantity}</span>
+      </div>
+      <button id="card-add-to-inventory-btn" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg font-medium text-xs">
+        + Add to Inventory
+      </button>
+    </div>
+  `;
 
   const legalities = Object.entries(card.legalities || {})
     .map(([fmt, status]) => legalityBadge(fmt, status))
@@ -233,9 +249,39 @@ function renderCardDetail(card) {
   document.getElementById("card-detail-content").innerHTML = `
     ${faces}
     ${priceLine}
+    ${ownedLine}
     <div class="flex flex-wrap gap-2 mt-3">${legalities}</div>
     ${meta}
   `;
+
+  document.getElementById("card-add-to-inventory-btn").addEventListener("click", addCurrentCardToInventory);
+}
+
+async function addCurrentCardToInventory() {
+  if (!currentCardInventoryName) return;
+
+  const btn = document.getElementById("card-add-to-inventory-btn");
+  const qtyEl = document.getElementById("card-owned-qty");
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Adding...";
+
+  try {
+    const res = await fetch(`${API_BASE}/inventory/quick-add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ card_name: currentCardInventoryName }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    qtyEl.textContent = data.total_quantity;
+  } catch (err) {
+    alert(`Failed to add to inventory: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 async function searchCard() {
@@ -724,20 +770,64 @@ document.getElementById("refresh-prices-btn").addEventListener("click", async ()
   }
 });
 
+let managePage = 1;
+let managePageSize = 50;
+
 async function loadInventory() {
   const search = document.getElementById("manage-search").value.trim();
-  const url = search
-    ? `${API_BASE}/inventory?search=${encodeURIComponent(search)}`
-    : `${API_BASE}/inventory`;
+  const params = new URLSearchParams({ page: managePage, page_size: managePageSize });
+  if (search) params.set("search", search);
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(`${API_BASE}/inventory?${params.toString()}`);
     const data = await res.json();
+
+    // If a delete/filter change left us past the last page, snap back
+    // instead of showing an empty table with working Prev/Next buttons.
+    if (data.total_count > 0 && managePage > data.total_pages) {
+      managePage = data.total_pages;
+      return loadInventory();
+    }
+
     renderInventoryTable(data.cards);
+    renderManagePagination(data);
   } catch (err) {
     console.error("Failed to load inventory:", err);
   }
 }
+
+function renderManagePagination(data) {
+  const info = document.getElementById("manage-pagination-info");
+  const prevBtn = document.getElementById("manage-prev-btn");
+  const nextBtn = document.getElementById("manage-next-btn");
+
+  if (data.total_count === 0) {
+    info.textContent = "No cards.";
+  } else {
+    const start = (data.page - 1) * data.page_size + 1;
+    const end = Math.min(data.page * data.page_size, data.total_count);
+    info.textContent = `${start}–${end} of ${data.total_count}`;
+  }
+
+  prevBtn.disabled = data.page <= 1;
+  nextBtn.disabled = data.page >= data.total_pages;
+}
+
+document.getElementById("manage-prev-btn").addEventListener("click", () => {
+  if (managePage > 1) {
+    managePage -= 1;
+    loadInventory();
+  }
+});
+document.getElementById("manage-next-btn").addEventListener("click", () => {
+  managePage += 1;
+  loadInventory();
+});
+document.getElementById("manage-page-size").addEventListener("change", (e) => {
+  managePageSize = parseInt(e.target.value, 10);
+  managePage = 1;
+  loadInventory();
+});
 
 function renderInventoryTable(cards) {
   const tbody = document.getElementById("manage-table-body");
@@ -900,7 +990,10 @@ async function deleteCard(cardName) {
 
 document.getElementById("manage-search").addEventListener("input", () => {
   clearTimeout(manageSearchDebounce);
-  manageSearchDebounce = setTimeout(loadInventory, 300);
+  manageSearchDebounce = setTimeout(() => {
+    managePage = 1;
+    loadInventory();
+  }, 300);
 });
 
 document.getElementById("add-card-btn").addEventListener("click", async () => {
@@ -1024,7 +1117,7 @@ async function loadDecksTab() {
   try {
     const [decksRes, invRes] = await Promise.all([
       fetch(`${API_BASE}/decks`),
-      fetch(`${API_BASE}/inventory`),
+      fetch(`${API_BASE}/inventory/names`),
     ]);
     const decksData = await decksRes.json();
     const invData = await invRes.json();
@@ -1044,9 +1137,9 @@ async function loadDecksTab() {
 
     const datalist = document.getElementById("inventory-card-list");
     datalist.innerHTML = "";
-    invData.cards.forEach((c) => {
+    invData.card_names.forEach((name) => {
       const opt = document.createElement("option");
-      opt.value = c.card_name;
+      opt.value = name;
       datalist.appendChild(opt);
     });
 

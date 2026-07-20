@@ -6,6 +6,7 @@ from .models import Inventory, DeckAssignment, DeckMeta
 from .parser import parse_decklist
 from .fuzzy import find_best_match, DEFAULT_THRESHOLD
 from .constants import is_basic_land, canonical_basic_land_name
+from .availability import get_available_quantity as _get_available_quantity
 
 
 @dataclass
@@ -22,24 +23,6 @@ class LineResult:
 class ActionResult:
     lines: list[LineResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-
-
-def _get_available_quantity(db: Session, card_name: str, reserved: dict[str, int]) -> int:
-    """Same math as search.py, minus whatever this in-progress request has
-    already claimed for this card (the running-deduction guard)."""
-    inv = db.query(Inventory).filter(Inventory.card_name == card_name).one_or_none()
-    if inv is None:
-        return 0
-
-    checked_out = (
-        db.query(DeckAssignment)
-        .filter(DeckAssignment.card_name == card_name)
-        .all()
-    )
-    total_checked_out = sum(a.quantity for a in checked_out)
-    already_claimed_this_request = reserved.get(card_name, 0)
-
-    return max(0, inv.total_quantity - total_checked_out - already_claimed_this_request)
 
 
 def checkout_cards(
@@ -384,6 +367,11 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
     Returns every card currently checked out to `deck_name`, with
     quantity and how many more of that card could still be pulled from
     inventory (0 if fully committed elsewhere or not in inventory).
+
+    Batches inventory totals and cross-deck checkout totals into two
+    queries up front (keyed by this deck's card names) rather than
+    re-querying per card — previously this fired 2 extra queries for
+    every card in the deck.
     """
     assignments = (
         db.query(DeckAssignment)
@@ -391,6 +379,20 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
         .order_by(DeckAssignment.card_name.asc())
         .all()
     )
+
+    if not assignments:
+        return []
+
+    card_names = [a.card_name for a in assignments]
+
+    inv_map = {
+        row.card_name: row.total_quantity
+        for row in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all()
+    }
+
+    checked_out_map: dict[str, int] = {}
+    for a in db.query(DeckAssignment).filter(DeckAssignment.card_name.in_(card_names)).all():
+        checked_out_map[a.card_name] = checked_out_map.get(a.card_name, 0) + a.quantity
 
     result = []
     for a in assignments:
@@ -403,14 +405,8 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
             })
             continue
 
-        inv = db.query(Inventory).filter(Inventory.card_name == a.card_name).one_or_none()
-        total = inv.total_quantity if inv else 0
-        checked_out_everywhere = (
-            db.query(DeckAssignment)
-            .filter(DeckAssignment.card_name == a.card_name)
-            .all()
-        )
-        total_checked_out = sum(x.quantity for x in checked_out_everywhere)
+        total = inv_map.get(a.card_name, 0)
+        total_checked_out = checked_out_map.get(a.card_name, 0)
         available_more = max(0, total - total_checked_out)
 
         result.append({

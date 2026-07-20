@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 logging.basicConfig(
@@ -11,7 +12,7 @@ logging.basicConfig(
 )
 
 from .database import engine, Base, get_db
-from .models import DeckAssignment
+from .models import DeckAssignment, Inventory
 from .search import split_by_availability
 from .checkout import checkout_cards, checkin_cards, sync_checkout, sync_checkin, get_deck_cards
 from .csv_import import bulk_load_inventory
@@ -22,6 +23,8 @@ from .inventory_admin import (
     delete_card,
     bulk_add_cards,
     bulk_remove_cards,
+    get_owned_quantity,
+    add_one_copy,
     BlockedDeleteError,
     DuplicateCardError,
 )
@@ -32,6 +35,15 @@ from .card_lookup import lookup_card, record_card_view, get_recent_cards
 app = FastAPI(title="MTG Inventory Manager")
 
 Base.metadata.create_all(bind=engine)
+
+
+@app.get("/healthz")
+def healthz(db: Session = Depends(get_db)):
+    """Liveness + DB check for the reverse proxy / uptime monitoring —
+    a real SELECT, not just 'the process is running', so a corrupted or
+    missing DB file shows up here instead of only on first real request."""
+    db.execute(text("SELECT 1"))
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------
@@ -153,9 +165,10 @@ def homepage_deck_shortcuts(db: Session = Depends(get_db)):
 @app.get("/api/card-lookup")
 def card_lookup(name: str, db: Session = Depends(get_db)):
     """Homepage's Card Search — fuzzy Scryfall lookup for one card's
-    full printed info (image, oracle text, prices, legalities). Doesn't
-    touch inventory/pricing tables (see /api/pricing/refresh-card for
-    that); the only local write is bumping the "Last Viewed" cache."""
+    full printed info (image, oracle text, prices, legalities), plus
+    how many copies are in your inventory. The only local writes are
+    bumping the "Last Viewed" cache; use POST /api/inventory/quick-add
+    to actually add a copy."""
     if not name.strip():
         raise HTTPException(status_code=400, detail="Enter a card name to search.")
     try:
@@ -165,7 +178,21 @@ def card_lookup(name: str, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=404, detail=f"No Scryfall match found for '{name}'.")
     record_card_view(db, result)
+    result["owned_quantity"] = get_owned_quantity(db, result["inventory_name"])
     return result
+
+
+class QuickAddRequest(BaseModel):
+    card_name: str
+
+
+@app.post("/api/inventory/quick-add")
+def inventory_quick_add(req: QuickAddRequest, db: Session = Depends(get_db)):
+    """Card Search's 'Add to Inventory' button — adds exactly one copy,
+    incrementing an existing (fuzzy-matched) row or creating a new
+    one."""
+    row = add_one_copy(db, req.card_name)
+    return _row_to_dict(row)
 
 
 @app.get("/api/homepage/recent-cards")
@@ -231,10 +258,41 @@ def _row_to_dict(row):
     }
 
 
+VALID_PAGE_SIZES = (25, 50, 100)
+
+
 @app.get("/api/inventory")
-def get_inventory(search: str | None = None, db: Session = Depends(get_db)):
-    rows = list_inventory(db, search=search)
-    return {"cards": [_row_to_dict(r) for r in rows]}
+def get_inventory(
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+):
+    """Paginated for the Manage Collection table — see /api/inventory/names
+    for an unpaginated list of every card name (e.g. for autocomplete)."""
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be 1 or greater.")
+    if page_size not in VALID_PAGE_SIZES:
+        raise HTTPException(status_code=400, detail=f"page_size must be one of {VALID_PAGE_SIZES}.")
+
+    result = list_inventory(db, search=search, page=page, page_size=page_size)
+    total_pages = max(1, -(-result.total_count // page_size))  # ceil division
+    return {
+        "cards": [_row_to_dict(r) for r in result.rows],
+        "total_count": result.total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+@app.get("/api/inventory/names")
+def get_inventory_names(db: Session = Depends(get_db)):
+    """Every card name in inventory, unpaginated — powers the 'Add a
+    card to this deck' autocomplete in View Decks, which needs the full
+    list rather than one page of it."""
+    rows = db.query(Inventory.card_name).order_by(Inventory.card_name.asc()).all()
+    return {"card_names": [r.card_name for r in rows]}
 
 
 @app.post("/api/inventory")

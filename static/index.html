@@ -320,8 +320,15 @@
     </div>
 
     <!-- Search -->
-    <input id="manage-search" type="text" placeholder="Search collection..."
-      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-4">
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <input id="manage-search" type="text" placeholder="Search collection..."
+        class="flex-1 min-w-[160px] bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      <select id="manage-page-size" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+        <option value="25">25 / page</option>
+        <option value="50" selected>50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+    </div>
 
     <!-- Table -->
     <div class="overflow-x-auto">
@@ -341,6 +348,20 @@
       </table>
       <div id="manage-empty" class="text-slate-500 text-sm py-6 text-center hidden">
         No cards match your search.
+      </div>
+    </div>
+
+    <div class="flex items-center justify-between mt-3 text-sm text-slate-400">
+      <div id="manage-pagination-info"></div>
+      <div class="flex gap-2">
+        <button id="manage-prev-btn" type="button"
+          class="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg text-sm">
+          Prev
+        </button>
+        <button id="manage-next-btn" type="button"
+          class="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg text-sm">
+          Next
+        </button>
       </div>
     </div>
   </section>

@@ -289,25 +289,56 @@ function renderCardFace(face) {
   `;
 }
 
-function renderPriceLine(card) {
-  const parts = [];
-  if (card.price_usd != null) parts.push(`<div><span class="text-slate-500">USD:</span> $${Number(card.price_usd).toFixed(2)}</div>`);
-  if (card.price_usd_foil != null) parts.push(`<div><span class="text-slate-500">Foil:</span> $${Number(card.price_usd_foil).toFixed(2)}</div>`);
-  if (card.price_eur != null) parts.push(`<div><span class="text-slate-500">EUR:</span> €${Number(card.price_eur).toFixed(2)}</div>`);
-  if (parts.length === 0) return `<div class="text-sm text-slate-500 mt-4">No pricing available.</div>`;
-  return `<div class="flex gap-4 text-sm mt-4 flex-wrap">${parts.join("")}</div>`;
-}
+// Price is a whole-card property (not per-face — see card_lookup.py),
+// so this renders once at the top of the detail view rather than
+// interleaved with per-face bodies. Leads with the price, big and bold,
+// so it's readable at a glance before scrolling past rules text —
+// especially on mobile, where the primary price is the first thing on
+// screen after the card name.
+function renderPriceHero(card) {
+  // Not every printing has a USD price (e.g. some Pokemon promos only
+  // carry a Cardmarket/EUR price) — pick whichever price actually
+  // exists as the big primary figure instead of hard-coding USD, so
+  // the hero never shows "No pricing available" right next to a
+  // contradicting secondary price.
+  const candidates = [];
+  if (card.price_usd != null) candidates.push({ label: "USD", symbol: "$", value: card.price_usd });
+  if (card.price_usd_foil != null) candidates.push({ label: "Foil", symbol: "$", value: card.price_usd_foil });
+  if (card.price_eur != null) candidates.push({ label: "EUR", symbol: "€", value: card.price_eur });
 
-function renderOwnedLine(card) {
-  return `
-    <div class="flex items-center gap-3 mt-4">
-      <div class="text-sm">
-        <span class="text-slate-500"># in inventory:</span>
-        <span id="card-owned-qty" class="font-semibold text-slate-100">${card.owned_quantity}</span>
+  const [primary, ...secondary] = candidates;
+
+  const priceDisplay = primary
+    ? `
+      <div class="flex items-baseline gap-2">
+        <span class="text-4xl font-extrabold text-emerald-400 leading-none">${primary.symbol}${Number(primary.value).toFixed(2)}</span>
+        <span class="text-xs text-slate-500 uppercase tracking-wide">${primary.label}</span>
       </div>
-      <button id="card-add-to-inventory-btn" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg font-medium text-xs">
-        + Add to Inventory
-      </button>
+    `
+    : `<div class="text-lg font-medium text-slate-500">No pricing available</div>`;
+
+  const secondaryHtml = secondary
+    .map((s) => `<span><span class="text-slate-500">${s.label}</span> ${s.symbol}${Number(s.value).toFixed(2)}</span>`)
+    .join("");
+
+  return `
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          ${priceDisplay}
+          ${secondaryHtml ? `<div class="flex flex-wrap gap-3 mt-1.5 text-sm text-slate-400">${secondaryHtml}</div>` : ""}
+        </div>
+        <div class="flex items-center justify-between sm:justify-end gap-3">
+          <div class="text-sm text-slate-400">
+            <span class="text-slate-500"># owned:</span>
+            <span id="card-owned-qty" class="font-semibold text-slate-100 text-base">${card.owned_quantity}</span>
+          </div>
+          <button id="card-add-to-inventory-btn"
+            class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap">
+            + Add to Inventory
+          </button>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -394,9 +425,8 @@ function renderCardDetail(card) {
     .join(" ");
 
   document.getElementById("card-detail-content").innerHTML = `
+    ${renderPriceHero(card)}
     ${body}
-    ${renderPriceLine(card)}
-    ${renderOwnedLine(card)}
     <div class="flex flex-wrap gap-2 mt-3">${legalities}</div>
     ${renderMetaLine(card)}
   `;

@@ -34,13 +34,10 @@
       Manage Collection
     </button>
     <button type="button" data-tab="decks" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
-      View Decks
+      Decks
     </button>
     <button type="button" data-tab="search" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
       Collection Search
-    </button>
-    <button type="button" data-tab="checkout" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
-      Deck Checkout
     </button>
   </div>
 </nav>
@@ -169,62 +166,6 @@
           class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm"></textarea>
       </div>
     </div>
-  </section>
-
-  <!-- ===================== TAB 2: CHECKOUT ===================== -->
-  <section id="tab-checkout" class="tab-panel hidden">
-    <label class="block text-sm text-slate-400 mb-1">Deck</label>
-    <select id="checkout-deck-select"
-      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-2">
-      <option value="">-- choose a deck --</option>
-      <option value="__new__">+ New Deck</option>
-    </select>
-    <input id="checkout-new-deck-name" type="text"
-      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-4 hidden"
-      placeholder="New deck name...">
-
-    <label class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
-    <p class="text-xs text-slate-500 mb-1">
-      Selecting an existing deck loads its current contents below. Edit the quantities to the
-      totals you want, then Check Out to add up to those totals or Check In to reduce down to them —
-      lines you delete entirely are checked all the way in.
-    </p>
-    <textarea id="checkout-input" rows="10" maxlength="5100"
-      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"></textarea>
-
-    <div class="flex flex-wrap items-center gap-3 sm:gap-4 mb-4">
-      <label class="text-sm text-slate-400">Typo tolerance</label>
-
-      <div class="relative group flex items-center">
-        <button type="button" tabindex="0"
-          class="w-4 h-4 rounded-full border border-slate-500 text-slate-400 text-[10px] leading-4 text-center hover:border-slate-300 hover:text-slate-200 focus:outline-none"
-          aria-label="What does this number mean?">i</button>
-        <div class="pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 max-w-[80vw] bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs text-slate-300 shadow-lg z-10">
-          Controls how forgiving card-name matching is.
-          <span class="text-slate-100 font-medium">1</span> = very loose — catches big typos and misspellings,
-          but may occasionally match the wrong card.
-          <span class="text-slate-100 font-medium">10</span> = exact match — card names must be spelled
-          correctly. <span class="text-slate-100 font-medium">7</span> (default) is a good balance for
-          catching typos like "Ligtning Bolt".
-          <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-600"></div>
-        </div>
-      </div>
-
-      <input id="checkout-threshold" type="range" min="1" max="10" step="1" value="7" class="w-28 sm:w-40">
-      <input id="checkout-threshold-val" type="number" min="1" max="10" step="1" value="7"
-        class="text-sm w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center">
-
-      <div class="w-full sm:w-auto sm:ml-auto flex gap-2">
-        <button id="checkin-btn" class="flex-1 sm:flex-none bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg font-medium">
-          Check In
-        </button>
-        <button id="checkout-btn" class="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium">
-          Check Out
-        </button>
-      </div>
-    </div>
-
-    <div id="checkout-results" class="space-y-1 text-sm font-mono"></div>
   </section>
 
   <!-- ===================== TAB 4: MANAGE COLLECTION ===================== -->
@@ -366,18 +307,30 @@
     </div>
   </section>
 
-  <!-- ===================== TAB 5: VIEW DECKS ===================== -->
+  <!-- ===================== TAB: DECKS ===================== -->
   <section id="tab-decks" class="tab-panel hidden">
-    <label class="block text-sm text-slate-400 mb-1">Select a deck</label>
-    <div class="flex items-center gap-2 mb-4">
+    <label class="block text-sm text-slate-400 mb-1">Deck</label>
+    <div class="flex items-center gap-2 mb-2">
       <select id="deck-select"
         class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <option value="">-- choose a deck --</option>
+        <option value="__new__">+ New Deck</option>
       </select>
       <button id="deck-favorite-btn" type="button" disabled
         class="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-500 hover:text-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-lg"
         title="Favorite this deck">★</button>
+      <button id="deck-rename-btn" type="button" disabled
+        class="flex-shrink-0 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2 rounded-lg text-xs font-medium text-slate-300">
+        Rename
+      </button>
+      <button id="deck-delete-btn" type="button" disabled
+        class="flex-shrink-0 bg-rose-900 hover:bg-rose-800 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2 rounded-lg text-xs font-medium text-slate-100">
+        Delete
+      </button>
     </div>
+    <input id="deck-new-name-input" type="text"
+      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-4 hidden"
+      placeholder="New deck name...">
 
     <div id="deck-view" class="hidden">
       <!-- Quick add to deck -->
@@ -411,6 +364,57 @@
       </div>
       <div id="deck-empty" class="text-slate-500 text-sm py-6 text-center hidden">
         This deck has no cards checked out.
+      </div>
+
+      <!-- Bulk edit (paste a decklist) -->
+      <button id="deck-bulk-toggle-btn" type="button"
+        class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg font-medium text-sm mt-4 mb-4">
+        Bulk Edit (Paste List)
+      </button>
+
+      <div id="deck-bulk-panel" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4">
+        <label class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
+        <p class="text-xs text-slate-500 mb-1">
+          Loaded with this deck's current contents. Edit the quantities to the totals you want, then
+          Check Out to add up to those totals or Check In to reduce down to them — lines you delete
+          entirely are checked all the way in.
+        </p>
+        <textarea id="checkout-input" rows="10" maxlength="5100"
+          class="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"></textarea>
+
+        <div class="flex flex-wrap items-center gap-3 sm:gap-4 mb-4">
+          <label class="text-sm text-slate-400">Typo tolerance</label>
+
+          <div class="relative group flex items-center">
+            <button type="button" tabindex="0"
+              class="w-4 h-4 rounded-full border border-slate-500 text-slate-400 text-[10px] leading-4 text-center hover:border-slate-300 hover:text-slate-200 focus:outline-none"
+              aria-label="What does this number mean?">i</button>
+            <div class="pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 max-w-[80vw] bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs text-slate-300 shadow-lg z-10">
+              Controls how forgiving card-name matching is.
+              <span class="text-slate-100 font-medium">1</span> = very loose — catches big typos and misspellings,
+              but may occasionally match the wrong card.
+              <span class="text-slate-100 font-medium">10</span> = exact match — card names must be spelled
+              correctly. <span class="text-slate-100 font-medium">7</span> (default) is a good balance for
+              catching typos like "Ligtning Bolt".
+              <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-600"></div>
+            </div>
+          </div>
+
+          <input id="checkout-threshold" type="range" min="1" max="10" step="1" value="7" class="w-28 sm:w-40">
+          <input id="checkout-threshold-val" type="number" min="1" max="10" step="1" value="7"
+            class="text-sm w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center">
+
+          <div class="w-full sm:w-auto sm:ml-auto flex gap-2">
+            <button id="checkin-btn" class="flex-1 sm:flex-none bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg font-medium">
+              Check In
+            </button>
+            <button id="checkout-btn" class="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium">
+              Check Out
+            </button>
+          </div>
+        </div>
+
+        <div id="checkout-results" class="space-y-1 text-sm font-mono"></div>
       </div>
     </div>
   </section>

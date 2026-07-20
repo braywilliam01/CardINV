@@ -14,7 +14,6 @@ async function activateTab(tabName) {
   document.getElementById(`tab-${tabName}`).classList.remove("hidden");
 
   if (tabName === "search") loadDeckList();
-  if (tabName === "checkout") loadCheckoutDeckSelect();
   if (tabName === "manage") { loadInventory(); loadPricingSummary(); }
   if (tabName === "decks") await loadDecksTab();
 }
@@ -459,32 +458,6 @@ function renderCheckoutResults(lines, warnings, containerId = "checkout-results"
   });
 }
 
-async function loadCheckoutDeckSelect() {
-  try {
-    const res = await fetch(`${API_BASE}/decks`);
-    const data = await res.json();
-    const select = document.getElementById("checkout-deck-select");
-    const currentSelection = select.value;
-
-    select.innerHTML = `
-      <option value="">-- choose a deck --</option>
-      <option value="__new__">+ New Deck</option>
-    `;
-    data.decks.forEach((name) => {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      select.appendChild(opt);
-    });
-
-    if (data.decks.includes(currentSelection) || currentSelection === "__new__") {
-      select.value = currentSelection;
-    }
-  } catch (err) {
-    console.error("Failed to load checkout deck list:", err);
-  }
-}
-
 async function loadDeckIntoCheckoutBox(deckName) {
   try {
     const res = await fetch(`${API_BASE}/decks/${encodeURIComponent(deckName)}/cards`);
@@ -499,32 +472,10 @@ async function loadDeckIntoCheckoutBox(deckName) {
   }
 }
 
-function getEffectiveCheckoutDeckName() {
-  const select = document.getElementById("checkout-deck-select");
-  if (select.value === "__new__") {
-    return document.getElementById("checkout-new-deck-name").value.trim();
-  }
-  return select.value;
-}
-
-document.getElementById("checkout-deck-select").addEventListener("change", (e) => {
-  const value = e.target.value;
-  const newDeckInput = document.getElementById("checkout-new-deck-name");
-
-  if (value === "__new__") {
-    newDeckInput.classList.remove("hidden");
-    newDeckInput.value = "";
-    newDeckInput.focus();
-    document.getElementById("checkout-input").value = "";
-  } else {
-    newDeckInput.classList.add("hidden");
-    if (value) {
-      loadDeckIntoCheckoutBox(value);
-    } else {
-      document.getElementById("checkout-input").value = "";
-    }
-  }
-});
+// getEffectiveDeckName() and the unified #deck-select change handling
+// live down in the "Decks" section below — this bulk-edit panel shares
+// the same deck selector as the rest of the tab now, rather than
+// having its own.
 
 function renderSyncResults(lines, warnings, errors) {
   const container = document.getElementById("checkout-results");
@@ -568,7 +519,7 @@ function renderSyncResults(lines, warnings, errors) {
 
 async function runSyncAction(path, actionLabel, btnEl) {
   const decklist_text = document.getElementById("checkout-input").value;
-  const deck_name = getEffectiveCheckoutDeckName();
+  const deck_name = getEffectiveDeckName();
   const fuzzy_threshold = scaleToApiThreshold(clampScale(checkoutThresholdVal.value));
 
   if (!deck_name) {
@@ -590,11 +541,7 @@ async function runSyncAction(path, actionLabel, btnEl) {
     const data = await res.json();
 
     renderSyncResults(data.lines, data.warnings, data.errors);
-
-    await loadCheckoutDeckSelect();
-    document.getElementById("checkout-deck-select").value = deck_name;
-    document.getElementById("checkout-new-deck-name").classList.add("hidden");
-    await loadDeckIntoCheckoutBox(deck_name);
+    await afterDeckMutation(deck_name);
   } catch (err) {
     alert(`${actionLabel} failed: ${err.message}`);
   } finally {
@@ -1110,8 +1057,73 @@ document.getElementById("bulk-inv-remove-btn").addEventListener("click", (e) => 
   runBulkInventoryAction("bulk-remove", e.target);
 });
 
-// ---------- Tab 5: View Decks ----------
+// ---------- Decks ----------
 const DECK_ACTION_THRESHOLD = 90; // fixed high-confidence threshold for quick single-card actions
+
+function populateDeckSelectOptions(deckNames) {
+  const select = document.getElementById("deck-select");
+  const currentSelection = select.value;
+  select.innerHTML = `
+    <option value="">-- choose a deck --</option>
+    <option value="__new__">+ New Deck</option>
+  `;
+  deckNames.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+  return currentSelection;
+}
+
+function getEffectiveDeckName() {
+  const select = document.getElementById("deck-select");
+  if (select.value === "__new__") {
+    return document.getElementById("deck-new-name-input").value.trim();
+  }
+  return select.value;
+}
+
+function setDeckManageButtonsDisabled(disabled) {
+  document.getElementById("deck-rename-btn").disabled = disabled;
+  document.getElementById("deck-delete-btn").disabled = disabled;
+}
+
+// Shows/hides the deck-view panel and loads the right data for
+// whatever is currently chosen in #deck-select — "" (nothing),
+// "__new__", or a real deck name. Shared by the tab loader, the
+// change listener, and afterDeckMutation() (which re-settles the UI
+// once a "+ New Deck" in progress becomes real after its first
+// successful add/checkout).
+function applyDeckSelection(value) {
+  const view = document.getElementById("deck-view");
+  const newNameInput = document.getElementById("deck-new-name-input");
+
+  if (value === "__new__") {
+    newNameInput.classList.remove("hidden");
+    view.classList.remove("hidden");
+    renderDeckTable(null, []);
+    document.getElementById("checkout-input").value = "";
+    setFavoriteBtnState(false, true);
+    setDeckManageButtonsDisabled(true);
+    return;
+  }
+
+  newNameInput.classList.add("hidden");
+
+  if (!value) {
+    view.classList.add("hidden");
+    setFavoriteBtnState(false, true);
+    setDeckManageButtonsDisabled(true);
+    return;
+  }
+
+  view.classList.remove("hidden");
+  setDeckManageButtonsDisabled(false);
+  loadDeckContents(value);
+  loadDeckFavoriteState(value);
+  loadDeckIntoCheckoutBox(value);
+}
 
 async function loadDecksTab() {
   try {
@@ -1123,15 +1135,8 @@ async function loadDecksTab() {
     const invData = await invRes.json();
 
     const select = document.getElementById("deck-select");
-    const currentSelection = select.value;
-    select.innerHTML = `<option value="">-- choose a deck --</option>`;
-    decksData.decks.forEach((name) => {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      select.appendChild(opt);
-    });
-    if (decksData.decks.includes(currentSelection)) {
+    const currentSelection = populateDeckSelectOptions(decksData.decks);
+    if (decksData.decks.includes(currentSelection) || currentSelection === "__new__") {
       select.value = currentSelection;
     }
 
@@ -1143,15 +1148,24 @@ async function loadDecksTab() {
       datalist.appendChild(opt);
     });
 
-    if (select.value) {
-      loadDeckContents(select.value);
-      loadDeckFavoriteState(select.value);
-    } else {
-      document.getElementById("deck-view").classList.add("hidden");
-      setFavoriteBtnState(false, true);
-    }
+    applyDeckSelection(select.value);
   } catch (err) {
     console.error("Failed to load decks tab:", err);
+  }
+}
+
+// Refreshes the deck list (in case an action just created a new deck)
+// and settles the UI on `deckName` as a real, selected deck. Called
+// after any action that might have turned "+ New Deck" into a real one.
+async function afterDeckMutation(deckName) {
+  try {
+    const res = await fetch(`${API_BASE}/decks`);
+    const data = await res.json();
+    populateDeckSelectOptions(data.decks);
+    document.getElementById("deck-select").value = deckName;
+    applyDeckSelection(deckName);
+  } catch (err) {
+    console.error("Failed to refresh deck list:", err);
   }
 }
 
@@ -1176,7 +1190,7 @@ async function loadDeckFavoriteState(deckName) {
 
 document.getElementById("deck-favorite-btn").addEventListener("click", async () => {
   const deckName = document.getElementById("deck-select").value;
-  if (!deckName) return;
+  if (!deckName || deckName === "__new__") return;
   const favBtn = document.getElementById("deck-favorite-btn");
   const next = favBtn.dataset.favorite !== "true";
   favBtn.disabled = true;
@@ -1195,17 +1209,62 @@ document.getElementById("deck-favorite-btn").addEventListener("click", async () 
   }
 });
 
-document.getElementById("deck-select").addEventListener("change", (e) => {
-  const deckName = e.target.value;
-  const view = document.getElementById("deck-view");
-  if (!deckName) {
-    view.classList.add("hidden");
-    setFavoriteBtnState(false, true);
-    return;
+document.getElementById("deck-rename-btn").addEventListener("click", async () => {
+  const currentName = document.getElementById("deck-select").value;
+  if (!currentName || currentName === "__new__") return;
+
+  const newName = prompt("Rename deck to:", currentName);
+  if (newName === null) return; // cancelled
+  const trimmed = newName.trim();
+  if (!trimmed || trimmed === currentName) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/decks/${encodeURIComponent(currentName)}/rename`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_name: trimmed }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+    await afterDeckMutation(data.deck_name);
+  } catch (err) {
+    alert(`Failed to rename deck: ${err.message}`);
   }
-  view.classList.remove("hidden");
-  loadDeckContents(deckName);
-  loadDeckFavoriteState(deckName);
+});
+
+document.getElementById("deck-delete-btn").addEventListener("click", async () => {
+  const deckName = document.getElementById("deck-select").value;
+  if (!deckName || deckName === "__new__") return;
+
+  const confirmMsg = currentDeckCardsTotal > 0
+    ? `Delete '${deckName}'? ${currentDeckCardsTotal} checked-out card(s) will be returned to available inventory. This cannot be undone.`
+    : `Delete '${deckName}'? This cannot be undone.`;
+  if (!confirm(confirmMsg)) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/decks/${encodeURIComponent(deckName)}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    document.getElementById("deck-select").value = "";
+    await loadDecksTab();
+  } catch (err) {
+    alert(`Failed to delete deck: ${err.message}`);
+  }
+});
+
+document.getElementById("deck-select").addEventListener("change", (e) => {
+  if (e.target.value === "__new__") {
+    document.getElementById("deck-new-name-input").value = "";
+  }
+  applyDeckSelection(e.target.value);
+  if (e.target.value === "__new__") {
+    document.getElementById("deck-new-name-input").focus();
+  }
+});
+
+document.getElementById("deck-bulk-toggle-btn").addEventListener("click", () => {
+  document.getElementById("deck-bulk-panel").classList.toggle("hidden");
 });
 
 async function loadDeckContents(deckName) {
@@ -1218,10 +1277,13 @@ async function loadDeckContents(deckName) {
   }
 }
 
+let currentDeckCardsTotal = 0;
+
 function renderDeckTable(deckName, cards) {
   const tbody = document.getElementById("deck-table-body");
   const emptyMsg = document.getElementById("deck-empty");
   tbody.innerHTML = "";
+  currentDeckCardsTotal = cards.reduce((sum, c) => sum + c.quantity, 0);
 
   if (cards.length === 0) {
     emptyMsg.classList.remove("hidden");
@@ -1312,13 +1374,13 @@ async function quickCheckin(deckName, cardName, qty) {
 }
 
 document.getElementById("deck-add-card-btn").addEventListener("click", async () => {
-  const deckName = document.getElementById("deck-select").value;
+  const deckName = getEffectiveDeckName();
   const nameInput = document.getElementById("deck-add-card-name");
   const qtyInput = document.getElementById("deck-add-card-qty");
   const msgEl = document.getElementById("deck-add-msg");
 
   if (!deckName) {
-    msgEl.innerHTML = `<span class="text-rose-400">Select a deck first.</span>`;
+    msgEl.innerHTML = `<span class="text-rose-400">Select a deck first, or name your new deck above.</span>`;
     return;
   }
 
@@ -1356,7 +1418,7 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
 
     nameInput.value = "";
     qtyInput.value = "1";
-    loadDeckContents(deckName);
+    await afterDeckMutation(deckName);
   } catch (err) {
     msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
   }

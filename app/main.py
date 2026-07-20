@@ -30,6 +30,7 @@ from .inventory_admin import (
 )
 from .pricing import refresh_all_prices, refresh_single_price, get_collection_value, get_refresh_status, PricingError
 from .homepage import get_summary, get_deck_shortcuts, get_deck_meta, set_favorite
+from .deck_admin import rename_deck, delete_deck, DeckNotFoundError, DuplicateDeckError
 from .card_lookup import lookup_card, record_card_view, get_recent_cards
 
 app = FastAPI(title="MTG Inventory Manager")
@@ -145,6 +146,33 @@ class FavoriteRequest(BaseModel):
 @app.put("/api/decks/{deck_name}/favorite")
 def deck_meta_set_favorite(deck_name: str, req: FavoriteRequest, db: Session = Depends(get_db)):
     return set_favorite(db, deck_name, req.is_favorite)
+
+
+class RenameDeckRequest(BaseModel):
+    new_name: str
+
+
+@app.put("/api/decks/{deck_name}/rename")
+def deck_rename(deck_name: str, req: RenameDeckRequest, db: Session = Depends(get_db)):
+    try:
+        new_name = rename_deck(db, deck_name, req.new_name)
+    except DuplicateDeckError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except (DeckNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"deck_name": new_name}
+
+
+@app.delete("/api/decks/{deck_name}")
+def deck_delete(deck_name: str, db: Session = Depends(get_db)):
+    """Checks every card in the deck back in and removes it entirely —
+    the frontend confirms this with the user first, since it's not
+    reversible."""
+    try:
+        checked_in = delete_deck(db, deck_name)
+    except DeckNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"deleted": deck_name, "cards_checked_in": checked_in}
 
 
 # ---------------------------------------------------------------------

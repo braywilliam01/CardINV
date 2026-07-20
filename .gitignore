@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+mtg_inventory.db
+backups/*.db
+seed-data/*.csv
+.env

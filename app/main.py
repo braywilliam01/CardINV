@@ -1,17 +1,21 @@
 import logging
+import os
 
-from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Depends, Request, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from starlette.middleware.sessions import SessionMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logger = logging.getLogger("mtg_inventory.main")
 
-from .database import engine, Base, get_db
+from .database import auth_engine, AuthBase, get_auth_db
+from .auth import get_db, get_current_username, register_user, authenticate_user
 from .models import DeckAssignment, Inventory
 from .search import split_by_availability
 from .checkout import checkout_cards, checkin_cards, sync_checkout, sync_checkin, get_deck_cards
@@ -35,16 +39,75 @@ from .card_lookup import lookup_card, record_card_view, get_recent_cards
 
 app = FastAPI(title="MTG Inventory Manager")
 
-Base.metadata.create_all(bind=engine)
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "dev-insecure-change-me-in-production")
+if SESSION_SECRET_KEY == "dev-insecure-change-me-in-production":
+    logger.warning(
+        "SESSION_SECRET_KEY is not set — using an insecure default. "
+        "Set it to a random value before deploying anywhere real (see DEPLOY.md)."
+    )
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET_KEY,
+    same_site="lax",
+    https_only=os.environ.get("SESSION_HTTPS_ONLY", "false").lower() == "true",
+)
+
+AuthBase.metadata.create_all(bind=auth_engine)
 
 
 @app.get("/healthz")
-def healthz(db: Session = Depends(get_db)):
+def healthz():
     """Liveness + DB check for the reverse proxy / uptime monitoring —
-    a real SELECT, not just 'the process is running', so a corrupted or
-    missing DB file shows up here instead of only on first real request."""
-    db.execute(text("SELECT 1"))
+    checks the shared auth database directly (not Depends(get_db),
+    which requires a logged-in session) so this stays reachable without
+    auth, the way a health check needs to be."""
+    with auth_engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/register")
+def auth_register(req: RegisterRequest, request: Request, auth_db: Session = Depends(get_auth_db)):
+    try:
+        user = register_user(auth_db, req.username, req.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    request.session["username"] = user.username
+    return {"username": user.username}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest, request: Request, auth_db: Session = Depends(get_auth_db)):
+    user = authenticate_user(auth_db, req.username, req.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    request.session["username"] = user.username
+    return {"username": user.username}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    request.session.clear()
+    return {"logged_out": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(username: str = Depends(get_current_username)):
+    return {"username": username}
 
 
 # ---------------------------------------------------------------------

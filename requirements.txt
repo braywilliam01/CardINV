@@ -4,3 +4,5 @@ sqlalchemy==2.0.35
 rapidfuzz==3.10.0
 python-multipart==0.0.12
 httpx==0.27.2
+bcrypt==4.2.0
+itsdangerous==2.2.0

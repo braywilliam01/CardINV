@@ -319,8 +319,6 @@ document.getElementById("card-search-input").addEventListener("keydown", (e) => 
   if (e.key === "Enter") searchCard();
 });
 
-showHomeView(); // Homepage is the default landing view
-
 // ---------- Tab 1: Search ----------
 const searchThreshold = document.getElementById("search-threshold");
 const searchThresholdVal = document.getElementById("search-threshold-val");
@@ -1462,4 +1460,95 @@ document.getElementById("output-add-to-deck-btn").addEventListener("click", asyn
   }
 });
 
-loadDeckList(); // populate the deck datalist on initial page load (Search tab is default-active)
+// ---------- Auth ----------
+function showAuthView() {
+  document.getElementById("menu-btn").classList.add("hidden");
+  document.getElementById("site-title-btn").classList.add("hidden");
+  document.getElementById("view-home").classList.add("hidden");
+  document.getElementById("view-app").classList.add("hidden");
+  document.getElementById("view-card").classList.add("hidden");
+  document.getElementById("view-auth").classList.remove("hidden");
+}
+
+function onAuthenticated(username) {
+  document.getElementById("menu-btn").classList.remove("hidden");
+  document.getElementById("site-title-btn").classList.remove("hidden");
+  document.getElementById("view-auth").classList.add("hidden");
+  document.getElementById("drawer-username").textContent = username;
+  loadDeckList(); // populate the Search/Add-to-Deck datalist
+  showHomeView();
+}
+
+async function checkAuthAndInit() {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`);
+    if (res.ok) {
+      const data = await res.json();
+      onAuthenticated(data.username);
+    } else {
+      showAuthView();
+    }
+  } catch (err) {
+    showAuthView();
+  }
+}
+
+let authMode = "login"; // "login" | "register"
+
+document.getElementById("auth-toggle-mode-btn").addEventListener("click", () => {
+  authMode = authMode === "login" ? "register" : "login";
+  document.getElementById("auth-heading").textContent = authMode === "login" ? "Log In" : "Register";
+  document.getElementById("auth-submit-btn").textContent = authMode === "login" ? "Log In" : "Register";
+  document.getElementById("auth-toggle-mode-btn").textContent =
+    authMode === "login" ? "Need an account? Register" : "Already have an account? Log in";
+  document.getElementById("auth-msg").textContent = "";
+});
+
+document.getElementById("auth-submit-btn").addEventListener("click", async () => {
+  const username = document.getElementById("auth-username").value.trim();
+  const password = document.getElementById("auth-password").value;
+  const msgEl = document.getElementById("auth-msg");
+  const btn = document.getElementById("auth-submit-btn");
+
+  if (!username || !password) {
+    msgEl.innerHTML = `<span class="text-rose-400">Enter a username and password.</span>`;
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Working...";
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/${authMode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    document.getElementById("auth-password").value = "";
+    onAuthenticated(data.username);
+  } catch (err) {
+    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});
+
+document.getElementById("auth-password").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("auth-submit-btn").click();
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  try {
+    await fetch(`${API_BASE}/auth/logout`, { method: "POST" });
+  } finally {
+    closeDrawer();
+    location.reload();
+  }
+});
+
+checkAuthAndInit();

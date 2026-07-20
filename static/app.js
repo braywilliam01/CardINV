@@ -310,34 +310,30 @@ function renderPriceHero(card) {
 
   const priceDisplay = primary
     ? `
-      <div class="flex items-baseline gap-2">
-        <span class="text-4xl font-extrabold text-emerald-400 leading-none">${primary.symbol}${Number(primary.value).toFixed(2)}</span>
-        <span class="text-xs text-slate-500 uppercase tracking-wide">${primary.label}</span>
+      <div class="flex items-baseline gap-2 justify-center sm:justify-start">
+        <span class="text-6xl sm:text-7xl font-black text-emerald-400 leading-none tracking-tight">${primary.symbol}${Number(primary.value).toFixed(2)}</span>
+        <span class="text-sm text-slate-500 uppercase tracking-wide">${primary.label}</span>
       </div>
     `
-    : `<div class="text-lg font-medium text-slate-500">No pricing available</div>`;
+    : `<div class="text-xl font-semibold text-slate-500 text-center sm:text-left">No pricing available</div>`;
 
   const secondaryHtml = secondary
     .map((s) => `<span><span class="text-slate-500">${s.label}</span> ${s.symbol}${Number(s.value).toFixed(2)}</span>`)
     .join("");
 
   return `
-    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
-      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          ${priceDisplay}
-          ${secondaryHtml ? `<div class="flex flex-wrap gap-3 mt-1.5 text-sm text-slate-400">${secondaryHtml}</div>` : ""}
+    <div class="bg-emerald-950/20 border-2 border-emerald-800/60 rounded-xl p-5 mb-4">
+      ${priceDisplay}
+      ${secondaryHtml ? `<div class="flex flex-wrap gap-3 mt-2 text-sm text-slate-400 justify-center sm:justify-start">${secondaryHtml}</div>` : ""}
+      <div class="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-emerald-900/50">
+        <div class="text-sm text-slate-400">
+          <span class="text-slate-500"># owned:</span>
+          <span id="card-owned-qty" class="font-semibold text-slate-100 text-base">${card.owned_quantity}</span>
         </div>
-        <div class="flex items-center justify-between sm:justify-end gap-3">
-          <div class="text-sm text-slate-400">
-            <span class="text-slate-500"># owned:</span>
-            <span id="card-owned-qty" class="font-semibold text-slate-100 text-base">${card.owned_quantity}</span>
-          </div>
-          <button id="card-add-to-inventory-btn"
-            class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap">
-            + Add to Inventory
-          </button>
-        </div>
+        <button id="card-add-to-inventory-btn"
+          class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap">
+          + Add to Inventory
+        </button>
       </div>
     </div>
   `;

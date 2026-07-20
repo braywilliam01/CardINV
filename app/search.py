@@ -47,7 +47,7 @@ def split_by_availability(
 ) -> SplitResult:
     parsed_lines = parse_decklist(decklist_text)
 
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
     available_out: list[str] = []
     missing_out: list[str] = []

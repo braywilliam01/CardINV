@@ -380,9 +380,13 @@ function renderPokemonCardBody(card) {
 }
 
 let currentCardInventoryName = null;
+let currentCardSetCode = "";
+let currentCardCollectorNumber = "";
 
 function renderCardDetail(card) {
   currentCardInventoryName = card.inventory_name;
+  currentCardSetCode = card.set_code || "";
+  currentCardCollectorNumber = card.collector_number || "";
 
   const body = currentGame === "pokemon" ? renderPokemonCardBody(card) : renderMtgCardBody(card);
   const legalities = Object.entries(card.legalities || {})
@@ -413,12 +417,21 @@ async function addCurrentCardToInventory() {
     const res = await fetch(`${API_BASE}/inventory/quick-add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ card_name: currentCardInventoryName }),
+      body: JSON.stringify({
+        card_name: currentCardInventoryName,
+        set_code: currentCardSetCode,
+        collector_number: currentCardCollectorNumber,
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
 
-    qtyEl.textContent = data.total_quantity;
+    // Show this specific printing's count, not the card's aggregate
+    // total across every printing.
+    const printing = (data.printings || []).find(
+      (p) => p.set_code === currentCardSetCode && p.collector_number === currentCardCollectorNumber
+    );
+    qtyEl.textContent = printing ? printing.total_quantity : data.total_quantity;
   } catch (err) {
     alert(`Failed to add to inventory: ${err.message}`);
   } finally {
@@ -942,19 +955,30 @@ function renderInventoryTable(cards) {
 
     const priceDisplay = card.price_usd != null ? `$${card.price_usd.toFixed(2)}` : "—";
     const valueDisplay = card.line_value != null ? `$${card.line_value.toFixed(2)}` : "—";
+    // A name with more than one printing row can't be edited as a
+    // single quantity from the collapsed row — which specific printing
+    // would a "+1" apply to? Expand the row to edit a printing directly.
+    const multiPrinting = card.printing_count > 1;
 
     tr.innerHTML = `
+      <td class="py-2 pr-2 align-top">
+        <button type="button" class="row-expand-btn w-5 h-5 flex items-center justify-center text-slate-500 hover:text-slate-200" title="Show printings">▸</button>
+      </td>
       <td class="py-2 pr-2">
         ${escapeHtml(card.card_name)}
         ${card.decks.length ? `<span class="text-xs text-slate-500" title="${escapeHtml(deckTitle)}"> (in ${card.decks.length} deck${card.decks.length > 1 ? "s" : ""})</span>` : ""}
+        ${multiPrinting ? `<span class="text-xs text-slate-500"> · ${card.printing_count} printings</span>` : ""}
+        ${card.has_unresolved ? `<span class="text-xs text-amber-400" title="Has copies not yet assigned to a specific printing"> · unresolved</span>` : ""}
       </td>
       <td class="py-2 px-2">
         <div class="flex items-center gap-1">
-          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700" data-delta="-1">−</button>
+          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed" data-delta="-1" ${multiPrinting ? "disabled" : ""}>−</button>
           <input type="number" min="0" value="${card.total_quantity}"
-            class="qty-input w-14 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center">
-          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700" data-delta="1">+</button>
+            class="qty-input w-14 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center disabled:opacity-50"
+            ${multiPrinting ? "disabled" : ""}>
+          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed" data-delta="1" ${multiPrinting ? "disabled" : ""}>+</button>
         </div>
+        ${multiPrinting ? `<div class="text-[10px] text-slate-500 mt-1">expand to edit</div>` : ""}
       </td>
       <td class="py-2 px-2 text-slate-400">${card.checked_out}</td>
       <td class="py-2 px-2 ${card.available > 0 ? "text-emerald-400" : "text-slate-500"}">${card.available}</td>
@@ -962,31 +986,34 @@ function renderInventoryTable(cards) {
       <td class="py-2 px-2 text-slate-300">${valueDisplay}</td>
       <td class="py-2 px-2">
         <div class="flex gap-2">
-          <button class="qty-save bg-indigo-600 hover:bg-indigo-500 px-2 py-1 rounded text-xs">Save</button>
+          <button class="qty-save bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded text-xs" ${multiPrinting ? "disabled" : ""}>Save</button>
           <button class="price-refresh bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-xs" title="Refresh this card's price">$</button>
-          <button class="card-delete bg-rose-900 hover:bg-rose-800 px-2 py-1 rounded text-xs">Delete</button>
+          <button class="card-delete bg-rose-900 hover:bg-rose-800 px-2 py-1 rounded text-xs" title="Delete this card and all its printings">Delete</button>
         </div>
       </td>
     `;
 
     const qtyInput = tr.querySelector(".qty-input");
 
-    tr.querySelectorAll(".qty-nudge").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const delta = parseInt(btn.dataset.delta, 10);
-        const next = Math.max(0, parseInt(qtyInput.value || "0", 10) + delta);
-        qtyInput.value = next;
+    if (!multiPrinting) {
+      tr.querySelectorAll(".qty-nudge").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const delta = parseInt(btn.dataset.delta, 10);
+          const next = Math.max(0, parseInt(qtyInput.value || "0", 10) + delta);
+          qtyInput.value = next;
+        });
       });
-    });
 
-    tr.querySelector(".qty-save").addEventListener("click", async () => {
-      const newQty = parseInt(qtyInput.value, 10);
-      if (isNaN(newQty) || newQty < 0) {
-        alert("Enter a valid quantity (0 or higher).");
-        return;
-      }
-      await saveQuantity(card.card_name, newQty);
-    });
+      tr.querySelector(".qty-save").addEventListener("click", async () => {
+        const newQty = parseInt(qtyInput.value, 10);
+        if (isNaN(newQty) || newQty < 0) {
+          alert("Enter a valid quantity (0 or higher).");
+          return;
+        }
+        const printing = card.printings[0] || { set_code: "", collector_number: "" };
+        await saveQuantity(card.card_name, newQty, printing.set_code, printing.collector_number);
+      });
+    }
 
     tr.querySelector(".card-delete").addEventListener("click", async () => {
       await deleteCard(card.card_name);
@@ -1013,15 +1040,140 @@ function renderInventoryTable(cards) {
     });
 
     tbody.appendChild(tr);
+
+    // Printings breakdown, built from data already in `card` (no extra
+    // fetch) and toggled via the expand button — hidden by default.
+    const printingsTr = document.createElement("tr");
+    printingsTr.className = "printings-row hidden border-b border-slate-800";
+    const printingsTd = document.createElement("td");
+    printingsTd.colSpan = 8;
+    printingsTd.className = "py-3 px-2 bg-slate-900/50";
+    printingsTd.appendChild(renderPrintingsPanel(card));
+    printingsTr.appendChild(printingsTd);
+    tbody.appendChild(printingsTr);
+
+    tr.querySelector(".row-expand-btn").addEventListener("click", (e) => {
+      const collapsed = printingsTr.classList.contains("hidden");
+      printingsTr.classList.toggle("hidden");
+      e.target.textContent = collapsed ? "▾" : "▸";
+    });
   });
 }
 
-async function saveQuantity(cardName, newQty) {
+function renderPrintingsPanel(card) {
+  const wrap = document.createElement("div");
+
+  const table = document.createElement("table");
+  table.className = "w-full text-xs mb-3";
+  table.innerHTML = `
+    <thead>
+      <tr class="text-left text-slate-500 border-b border-slate-800">
+        <th class="py-1 pr-2">Printing</th>
+        <th class="py-1 px-2 w-28">Quantity</th>
+        <th class="py-1 px-2 w-32">Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector("tbody");
+
+  card.printings.forEach((p) => {
+    const label = p.is_unresolved
+      ? `<span class="text-amber-400">Unresolved</span>`
+      : `${escapeHtml(p.set_code)} #${escapeHtml(p.collector_number)}`;
+
+    const row = document.createElement("tr");
+    row.className = "border-b border-slate-800/60";
+    row.innerHTML = `
+      <td class="py-1 pr-2">${label}</td>
+      <td class="py-1 px-2">
+        <input type="number" min="0" value="${p.total_quantity}"
+          class="printing-qty-input w-16 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center">
+      </td>
+      <td class="py-1 px-2">
+        <div class="flex gap-1">
+          <button class="printing-save bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 rounded text-[11px]">Save</button>
+          <button class="printing-delete bg-rose-900 hover:bg-rose-800 px-2 py-0.5 rounded text-[11px]">Delete</button>
+        </div>
+      </td>
+    `;
+
+    const qtyInput = row.querySelector(".printing-qty-input");
+    row.querySelector(".printing-save").addEventListener("click", async () => {
+      const newQty = parseInt(qtyInput.value, 10);
+      if (isNaN(newQty) || newQty < 0) {
+        alert("Enter a valid quantity (0 or higher).");
+        return;
+      }
+      await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number);
+    });
+    row.querySelector(".printing-delete").addEventListener("click", async () => {
+      await deletePrinting(card.card_name, p.set_code, p.collector_number);
+    });
+
+    tbody.appendChild(row);
+  });
+
+  wrap.appendChild(table);
+
+  if (card.has_unresolved) {
+    const fixup = document.createElement("div");
+    fixup.className = "bg-slate-950 border border-slate-800 rounded-lg p-3";
+    fixup.innerHTML = `
+      <div class="text-xs text-slate-400 mb-2">Assign unresolved copies to a printing</div>
+      <div class="flex flex-wrap gap-2">
+        <input type="text" placeholder="Set" list="add-card-set-list"
+          class="fixup-set flex-1 min-w-[100px] bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <input type="text" placeholder="Collector #"
+          class="fixup-number w-28 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <input type="number" min="1" value="1" placeholder="Qty"
+          class="fixup-qty w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <button class="fixup-submit bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs font-medium">Assign</button>
+      </div>
+      <div class="fixup-msg text-xs mt-2"></div>
+    `;
+
+    fixup.querySelector(".fixup-submit").addEventListener("click", async () => {
+      const setCode = fixup.querySelector(".fixup-set").value.trim();
+      const number = fixup.querySelector(".fixup-number").value.trim();
+      const qty = parseInt(fixup.querySelector(".fixup-qty").value, 10);
+      const msgEl = fixup.querySelector(".fixup-msg");
+
+      if (!setCode && !number) {
+        msgEl.innerHTML = `<span class="text-rose-400">Enter a set and/or collector number.</span>`;
+        return;
+      }
+      if (isNaN(qty) || qty <= 0) {
+        msgEl.innerHTML = `<span class="text-rose-400">Enter a quantity of 1 or more.</span>`;
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(card.card_name)}/assign-printing`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quantity: qty, set_code: setCode, collector_number: number }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+        loadInventory();
+      } catch (err) {
+        msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+      }
+    });
+
+    wrap.appendChild(fixup);
+  }
+
+  return wrap;
+}
+
+async function saveQuantity(cardName, newQty, setCode = "", collectorNumber = "") {
   try {
     const res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(cardName)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ total_quantity: newQty }),
+      body: JSON.stringify({ total_quantity: newQty, set_code: setCode, collector_number: collectorNumber }),
     });
     const data = await res.json();
 
@@ -1047,7 +1199,9 @@ async function saveQuantity(cardName, newQty) {
 
 async function deleteCard(cardName) {
   try {
-    // First attempt: blocked by default if checked out anywhere.
+    // First attempt: blocked by default if checked out anywhere. This
+    // deletes every printing of the card — see deletePrinting for
+    // removing just one.
     let res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(cardName)}`, { method: "DELETE" });
 
     if (res.status === 409) {
@@ -1080,6 +1234,45 @@ async function deleteCard(cardName) {
   }
 }
 
+async function deletePrinting(cardName, setCode, collectorNumber) {
+  const label = setCode || collectorNumber ? `${setCode} #${collectorNumber}` : "unresolved";
+  try {
+    const params = new URLSearchParams({ set_code: setCode || "", collector_number: collectorNumber || "" });
+    let res = await fetch(
+      `${API_BASE}/inventory/${encodeURIComponent(cardName)}/printing?${params.toString()}`,
+      { method: "DELETE" }
+    );
+
+    if (res.status === 409) {
+      const data = await res.json();
+      const decks = (data.detail && data.detail.decks) || [];
+      const breakdown = decks.map((d) => `${d.quantity}x from "${d.deck_name}"`).join(", ");
+
+      const confirmed = confirm(
+        `'${cardName}' (${label}) can't be removed without leaving deck checkouts unaccounted for (${breakdown}).\n\n` +
+        `Removing will also check those cards in from those decks. This cannot be undone.\n\n` +
+        `Continue?`
+      );
+      if (!confirmed) return;
+
+      params.set("force", "true");
+      res = await fetch(
+        `${API_BASE}/inventory/${encodeURIComponent(cardName)}/printing?${params.toString()}`,
+        { method: "DELETE" }
+      );
+    }
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data.detail && data.detail.message) || data.detail || `Server error: ${res.status}`);
+    }
+
+    loadInventory();
+  } catch (err) {
+    alert(`Failed to delete printing: ${err.message}`);
+  }
+}
+
 document.getElementById("manage-search").addEventListener("input", () => {
   clearTimeout(manageSearchDebounce);
   manageSearchDebounce = setTimeout(() => {
@@ -1091,10 +1284,14 @@ document.getElementById("manage-search").addEventListener("input", () => {
 document.getElementById("add-card-btn").addEventListener("click", async () => {
   const nameInput = document.getElementById("add-card-name");
   const qtyInput = document.getElementById("add-card-qty");
+  const setInput = document.getElementById("add-card-set");
+  const numberInput = document.getElementById("add-card-number");
   const msgEl = document.getElementById("add-card-msg");
 
   const card_name = nameInput.value.trim();
   const total_quantity = parseInt(qtyInput.value, 10);
+  const set_code = setInput.value.trim();
+  const collector_number = numberInput.value.trim();
 
   if (!card_name) {
     msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
@@ -1109,7 +1306,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     const res = await fetch(`${API_BASE}/inventory`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ card_name, total_quantity }),
+      body: JSON.stringify({ card_name, total_quantity, set_code, collector_number }),
     });
     const data = await res.json();
 
@@ -1120,10 +1317,31 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     msgEl.innerHTML = `<span class="text-emerald-400">Added '${escapeHtml(card_name)}'.</span>`;
     nameInput.value = "";
     qtyInput.value = "1";
+    setInput.value = "";
+    numberInput.value = "";
     loadInventory();
   } catch (err) {
     msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
   }
+});
+
+// ---------- Set autocomplete (backs Add a card's Set field and the fix-up form) ----------
+let setAutocompleteDebounce;
+document.getElementById("add-card-set").addEventListener("input", (e) => {
+  clearTimeout(setAutocompleteDebounce);
+  const q = e.target.value.trim();
+  setAutocompleteDebounce = setTimeout(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/sets?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      const datalist = document.getElementById("add-card-set-list");
+      datalist.innerHTML = (data.sets || [])
+        .map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)} (${escapeHtml(s.code)})</option>`)
+        .join("");
+    } catch (err) {
+      console.error("Failed to load sets:", err);
+    }
+  }, 200);
 });
 
 // ---------- Tab 4 (cont'd): Bulk Add / Remove ----------

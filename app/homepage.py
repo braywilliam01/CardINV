@@ -17,7 +17,10 @@ def get_summary(db: Session) -> dict:
     and total collection value (delegates to pricing.get_collection_value
     so the dollar figure always matches the Manage Collection tab).
     """
-    unique_cards = db.query(Inventory).count()
+    # count(distinct card_name), not count(*) — a name can now have
+    # multiple printing rows (see models.py), and "unique cards" here
+    # means unique names, not unique printings.
+    unique_cards = db.query(func.count(func.distinct(Inventory.card_name))).scalar()
     total_quantity = db.query(func.coalesce(func.sum(Inventory.total_quantity), 0)).scalar()
     deck_count = (
         db.query(DeckAssignment.deck_name)

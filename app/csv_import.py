@@ -99,11 +99,12 @@ def bulk_load_inventory(db: Session, csv_text: str, ignore_basic_lands: bool = T
     result = ImportResult(warnings=parse_warnings, skipped_basic_lands=skipped_basic_lands)
 
     try:
-        # Bulk delete — bypasses ORM cascade, so deck_assignments survive.
-        # (Using db.delete() per-object in a loop would instead trigger
-        # cascade="all, delete-orphan" on the Inventory relationship and
-        # wipe deck_assignments — bulk delete is the mechanism that makes
-        # preservation work.)
+        # Wipes every printing row, not just unresolved ones — CSV import
+        # doesn't capture set/collector number (see models.py), so a
+        # reload can't tell which existing printing rows still apply and
+        # replaces all of them with one unresolved (name-only) row per
+        # card. deck_assignments has no FK to inventory, so it's
+        # unaffected by this delete.
         db.query(Inventory).delete()
 
         for card_name, total_qty in aggregated.items():

@@ -337,15 +337,26 @@
     <!-- Add new card -->
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
       <h3 class="font-semibold mb-3 text-sm text-slate-300">Add a card</h3>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex flex-wrap gap-2 mb-2">
         <input id="add-card-name" type="text" placeholder="Card name"
           class="flex-1 min-w-[140px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <input id="add-card-qty" type="number" min="0" value="1" placeholder="Qty"
           class="w-20 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div class="flex flex-wrap gap-2 mb-2">
+        <input id="add-card-set" list="add-card-set-list" type="text" placeholder="Set (optional)"
+          class="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <datalist id="add-card-set-list"></datalist>
+        <input id="add-card-number" type="text" placeholder="Collector # (optional)"
+          class="w-40 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <button id="add-card-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
           Add
         </button>
       </div>
+      <p class="text-xs text-slate-500">
+        Leave Set/Number blank to add as an unresolved printing — you can assign specific copies to a
+        printing later from the collection table below.
+      </p>
       <div id="add-card-msg" class="text-sm mt-2"></div>
     </div>
 
@@ -394,6 +405,7 @@
       <table class="w-full text-sm">
         <thead>
           <tr class="text-left text-slate-400 border-b border-slate-700">
+            <th class="py-2 pr-2 w-8"></th>
             <th class="py-2 pr-2">Card Name</th>
             <th class="py-2 px-2 w-24">Total</th>
             <th class="py-2 px-2 w-24">Checked Out</th>

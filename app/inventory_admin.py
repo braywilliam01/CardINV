@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .models import Inventory, DeckAssignment, CardPrice
@@ -13,6 +14,12 @@ from .constants import is_basic_land
 BULK_MATCH_THRESHOLD = 90
 
 
+def _norm_printing(set_code: str | None, collector_number: str | None) -> tuple[str, str]:
+    """Empty string (never None) is the 'unresolved printing' sentinel
+    — see models.py for why that matters under SQLite."""
+    return (set_code or "").strip().upper(), (collector_number or "").strip()
+
+
 @dataclass
 class DeckHold:
     deck_name: str
@@ -20,7 +27,28 @@ class DeckHold:
 
 
 @dataclass
+class PrintingRow:
+    """One (set_code, collector_number) row for a card name. Both
+    fields empty together means 'unresolved' — quantity not yet tied
+    to a specific printing. No checked_out/available here: deck
+    assignments aren't printing-specific yet (that's a later phase),
+    so availability is only meaningful at the card-name level — see
+    InventoryRow.
+    """
+    set_code: str
+    collector_number: str
+    total_quantity: int
+    is_unresolved: bool
+
+
+@dataclass
 class InventoryRow:
+    """One grouped row per card name, aggregated across every printing
+    — what Manage Collection's main table renders. total_quantity/
+    checked_out/available are summed across all of that name's
+    printing rows. `printings` is the per-printing breakdown shown
+    when the row is expanded.
+    """
     card_name: str
     total_quantity: int
     checked_out: int
@@ -28,6 +56,9 @@ class InventoryRow:
     decks: list[DeckHold] = field(default_factory=list)
     price_usd: float | None = None
     line_value: float | None = None
+    printing_count: int = 1
+    has_unresolved: bool = False
+    printings: list[PrintingRow] = field(default_factory=list)
 
 
 @dataclass
@@ -52,8 +83,15 @@ class BlockedDeleteError(Exception):
 
 
 class DuplicateCardError(Exception):
-    def __init__(self, card_name: str):
-        super().__init__(f"'{card_name}' already exists in inventory — use the edit action to adjust its quantity.")
+    def __init__(self, card_name: str, set_code: str = "", collector_number: str = ""):
+        self.card_name = card_name
+        self.set_code = set_code
+        self.collector_number = collector_number
+        printing = f"{set_code} #{collector_number}".strip(" #") if (set_code or collector_number) else "unresolved printing"
+        super().__init__(
+            f"'{card_name}' ({printing}) already exists in inventory — "
+            f"use the edit action to adjust its quantity."
+        )
 
 
 def _decks_for(db: Session, card_name: str) -> list[DeckHold]:
@@ -65,33 +103,84 @@ def _decks_for(db: Session, card_name: str) -> list[DeckHold]:
     return [DeckHold(deck_name=r.deck_name, quantity=r.quantity) for r in rows]
 
 
+def _to_printing_row(inv: Inventory) -> PrintingRow:
+    return PrintingRow(
+        set_code=inv.set_code,
+        collector_number=inv.collector_number,
+        total_quantity=inv.total_quantity,
+        is_unresolved=(inv.set_code == "" and inv.collector_number == ""),
+    )
+
+
+def get_printings_for_card(db: Session, card_name: str) -> list[PrintingRow]:
+    """Every printing row for one card name, for the fix-up modal /
+    expanded row view. Ordered with the unresolved bucket first (it's
+    the one you're usually trying to resolve), then by set/number."""
+    rows = (
+        db.query(Inventory)
+        .filter(Inventory.card_name == card_name)
+        .all()
+    )
+    rows.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
+    return [_to_printing_row(r) for r in rows]
+
+
+def _build_group_row(db: Session, card_name: str) -> InventoryRow:
+    """Recomputes the full aggregate row for one card name after a
+    write — used by the single-card mutation functions (add/adjust/
+    delete/assign) so they can return an up-to-date row without the
+    caller needing a second round-trip."""
+    printings = get_printings_for_card(db, card_name)
+    total_quantity = sum(p.total_quantity for p in printings)
+    decks = _decks_for(db, card_name)
+    checked_out = sum(d.quantity for d in decks)
+
+    price = db.query(CardPrice).filter(CardPrice.card_name == card_name).one_or_none()
+    price_usd = price.price_usd if price else None
+    line_value = round(price_usd * total_quantity, 2) if price_usd is not None else None
+
+    return InventoryRow(
+        card_name=card_name,
+        total_quantity=total_quantity,
+        checked_out=checked_out,
+        available=max(0, total_quantity - checked_out),
+        decks=decks,
+        price_usd=price_usd,
+        line_value=line_value,
+        printing_count=len(printings),
+        has_unresolved=any(p.is_unresolved for p in printings),
+        printings=printings,
+    )
+
+
 def list_inventory(
     db: Session, search: str | None = None, page: int = 1, page_size: int = 50
 ) -> InventoryPage:
     """
-    Returns one page of inventory rows plus the total match count (for
-    the Manage Collection tab's pagination controls). Batches prices
-    and deck assignments into two queries scoped to just this page's
-    card names, rather than one query per row — with a large collection
-    this used to mean a query per card just to render the table.
+    Returns one page of *grouped* inventory rows (one per card name,
+    aggregated across every printing) plus the total distinct-name
+    count, for the Manage Collection tab's pagination controls.
+    Batches prices, deck assignments, and printing rows into three
+    queries scoped to just this page's card names, rather than one
+    query per row.
     """
-    query = db.query(Inventory)
+    name_query = db.query(Inventory.card_name).distinct()
     if search:
-        query = query.filter(Inventory.card_name.ilike(f"%{search}%"))
+        name_query = name_query.filter(Inventory.card_name.ilike(f"%{search}%"))
 
-    total_count = query.count()
+    total_count = name_query.count()
 
-    rows = (
-        query.order_by(Inventory.card_name.asc())
+    name_rows = (
+        name_query.order_by(Inventory.card_name.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-
-    card_names = [r.card_name for r in rows]
+    card_names = [r.card_name for r in name_rows]
 
     price_map = {}
     deck_map: dict[str, list[DeckHold]] = {}
+    printing_map: dict[str, list[Inventory]] = {}
     if card_names:
         price_map = {
             p.card_name: p
@@ -103,160 +192,336 @@ def list_inventory(
             .all()
         ):
             deck_map.setdefault(a.card_name, []).append(DeckHold(deck_name=a.deck_name, quantity=a.quantity))
+        for inv in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all():
+            printing_map.setdefault(inv.card_name, []).append(inv)
 
     result = []
-    for inv in rows:
-        decks = deck_map.get(inv.card_name, [])
+    for card_name in card_names:
+        printings = printing_map.get(card_name, [])
+        printings.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
+        printing_rows = [_to_printing_row(p) for p in printings]
+        total_quantity = sum(p.total_quantity for p in printing_rows)
+
+        decks = deck_map.get(card_name, [])
         checked_out = sum(d.quantity for d in decks)
 
-        price = price_map.get(inv.card_name)
+        price = price_map.get(card_name)
         price_usd = price.price_usd if price else None
-        line_value = round(price_usd * inv.total_quantity, 2) if price_usd is not None else None
+        line_value = round(price_usd * total_quantity, 2) if price_usd is not None else None
 
         result.append(
             InventoryRow(
-                card_name=inv.card_name,
-                total_quantity=inv.total_quantity,
+                card_name=card_name,
+                total_quantity=total_quantity,
                 checked_out=checked_out,
-                available=max(0, inv.total_quantity - checked_out),
+                available=max(0, total_quantity - checked_out),
                 decks=decks,
                 price_usd=price_usd,
                 line_value=line_value,
+                printing_count=len(printing_rows),
+                has_unresolved=any(p.is_unresolved for p in printing_rows),
+                printings=printing_rows,
             )
         )
     return InventoryPage(rows=result, total_count=total_count)
 
 
-def add_card(db: Session, card_name: str, total_quantity: int) -> InventoryRow:
+def add_card(
+    db: Session, card_name: str, total_quantity: int, set_code: str = "", collector_number: str = ""
+) -> InventoryRow:
     """
-    Blocks case-insensitive exact duplicates ("sol ring" is caught as
-    the same card as an existing "Sol Ring") without fuzzy matching.
-    Deliberately not the same check as bulk_add_cards/add_one_copy: a
-    fuzzy threshold that's fine when the worst case is "merges into the
-    closest match" is too aggressive once the action is "block card
-    creation entirely" — plenty of distinct real card names (different
-    printings, "Elite Vanguard" vs "Elite Guardmage", etc.) are only a
-    few characters apart and would otherwise get wrongly rejected.
+    Creates one printing row: (card_name, set_code, collector_number).
+    Leaving set_code/collector_number blank creates/targets the
+    'unresolved' bucket for that name — the same behavior as before
+    per-printing tracking existed. Blocks case-insensitive exact
+    duplicates of the same printing (not the same fuzzy-match
+    threshold as bulk_add_cards/add_one_copy: a fuzzy threshold that's
+    fine when the worst case is "merges into the closest match" is too
+    aggressive once the action is "block card creation entirely" —
+    plenty of distinct real card names are only a few characters
+    apart and would otherwise get wrongly rejected).
     """
     card_name = card_name.strip()
+    set_code, collector_number = _norm_printing(set_code, collector_number)
     if not card_name:
         raise ValueError("Card name cannot be empty.")
     if total_quantity < 0:
         raise ValueError("Quantity cannot be negative.")
 
-    existing = db.query(Inventory).filter(Inventory.card_name.ilike(card_name)).one_or_none()
+    existing = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name.ilike(card_name),
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+        )
+        .one_or_none()
+    )
     if existing:
-        raise DuplicateCardError(existing.card_name)
+        raise DuplicateCardError(existing.card_name, set_code, collector_number)
 
-    db.add(Inventory(card_name=card_name, total_quantity=total_quantity))
+    db.add(
+        Inventory(
+            card_name=card_name,
+            set_code=set_code,
+            collector_number=collector_number,
+            total_quantity=total_quantity,
+        )
+    )
     db.commit()
 
-    return InventoryRow(card_name=card_name, total_quantity=total_quantity, checked_out=0, available=total_quantity)
+    return _build_group_row(db, card_name)
 
 
-def get_owned_quantity(db: Session, card_name: str) -> int:
+def get_owned_quantity(
+    db: Session, card_name: str, set_code: str = "", collector_number: str = ""
+) -> int:
     """
     Fuzzy-matches card_name against inventory (same threshold as bulk
-    add/remove) and returns how many copies are owned — 0 if there's no
-    close match. Powers Card Search's "# in inventory" figure.
+    add/remove). If set_code/collector_number are given, returns just
+    that printing's quantity (0 if that exact printing isn't owned,
+    even if other printings of the name are). Otherwise returns the
+    total across every printing of the name. Powers Card Search's
+    '# in inventory' figure.
     """
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
     matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
     if matched_name is None:
         return 0
-    inv = db.query(Inventory).filter(Inventory.card_name == matched_name).one()
-    return inv.total_quantity
+
+    set_code, collector_number = _norm_printing(set_code, collector_number)
+    if set_code or collector_number:
+        inv = (
+            db.query(Inventory)
+            .filter(
+                Inventory.card_name == matched_name,
+                Inventory.set_code == set_code,
+                Inventory.collector_number == collector_number,
+            )
+            .one_or_none()
+        )
+        return inv.total_quantity if inv else 0
+
+    total = (
+        db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
+        .filter(Inventory.card_name == matched_name)
+        .scalar()
+    )
+    return total
 
 
-def add_one_copy(db: Session, card_name: str) -> InventoryRow:
+def add_one_copy(
+    db: Session, card_name: str, set_code: str = "", collector_number: str = ""
+) -> InventoryRow:
     """
-    Increments an existing (fuzzy-matched) inventory row by one, or
-    creates a new one with quantity 1 if there's no close match. Powers
-    Card Search's "Add to Inventory" button — always adds exactly one
-    copy per click, mirroring the qty-nudge +1 buttons in Manage
-    Collection rather than asking for a quantity up front.
+    Increments one exact printing row by one (fuzzy-matching only the
+    card name, to avoid creating "Sol Ring" vs "sol ring" duplicates),
+    creating that printing row with quantity 1 if it doesn't exist yet.
+    Powers Card Search's "Add to Inventory" button — always adds
+    exactly one copy per click. When Card Search knows the exact
+    printing (set_code/collector_number from the lookup result), that's
+    what gets incremented; otherwise it falls back to the unresolved
+    bucket, same as before per-printing tracking existed.
     """
     card_name = card_name.strip()
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    set_code, collector_number = _norm_printing(set_code, collector_number)
+
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
     matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
+    target_name = matched_name or card_name
 
-    if matched_name is None:
-        db.add(Inventory(card_name=card_name, total_quantity=1))
-        db.commit()
-        return InventoryRow(card_name=card_name, total_quantity=1, checked_out=0, available=1)
-
-    inv = db.query(Inventory).filter(Inventory.card_name == matched_name).one()
+    inv = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == target_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+        )
+        .one_or_none()
+    )
+    if inv is None:
+        inv = Inventory(
+            card_name=target_name, set_code=set_code, collector_number=collector_number, total_quantity=0
+        )
+        db.add(inv)
     inv.total_quantity += 1
     db.commit()
 
-    decks = _decks_for(db, matched_name)
-    checked_out = sum(d.quantity for d in decks)
-    return InventoryRow(
-        card_name=matched_name,
-        total_quantity=inv.total_quantity,
-        checked_out=checked_out,
-        available=inv.total_quantity - checked_out,
-        decks=decks,
-    )
+    return _build_group_row(db, target_name)
 
 
-def adjust_quantity(db: Session, card_name: str, new_total_quantity: int) -> InventoryRow:
+def assign_printing(
+    db: Session, card_name: str, quantity: int, set_code: str, collector_number: str
+) -> InventoryRow:
     """
-    Sets total_quantity directly (used for both +/- nudges and manual
-    edits from the UI — the frontend computes the new absolute value).
-    Blocked if the new total would be less than what's currently checked
-    out across decks, since that would silently make availability
-    negative-equivalent. No force option here — reducing inventory below
-    what's checked out always requires checking cards in first; unlike
-    delete, there's no single "confirm" action that unambiguously
-    resolves which deck to pull the shortfall from.
+    The fix-up workflow: moves `quantity` copies of card_name out of
+    the unresolved ('', '') bucket and into the (set_code,
+    collector_number) printing, creating that printing row if it
+    doesn't exist yet. Never changes the card's total_quantity — this
+    only reclassifies which printing bucket the copies live in.
+    """
+    set_code, collector_number = _norm_printing(set_code, collector_number)
+    if not set_code and not collector_number:
+        raise ValueError("Set and/or collector number is required to resolve a printing.")
+    if quantity <= 0:
+        raise ValueError("Quantity must be positive.")
+
+    unresolved = (
+        db.query(Inventory)
+        .filter(Inventory.card_name == card_name, Inventory.set_code == "", Inventory.collector_number == "")
+        .one_or_none()
+    )
+    available = unresolved.total_quantity if unresolved else 0
+    if quantity > available:
+        raise ValueError(
+            f"Only {available} unresolved cop{'y' if available == 1 else 'ies'} of "
+            f"'{card_name}' available to assign."
+        )
+
+    target = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == card_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+        )
+        .one_or_none()
+    )
+    if target is None:
+        target = Inventory(
+            card_name=card_name, set_code=set_code, collector_number=collector_number, total_quantity=0
+        )
+        db.add(target)
+
+    unresolved.total_quantity -= quantity
+    target.total_quantity += quantity
+    db.commit()
+
+    return _build_group_row(db, card_name)
+
+
+def adjust_quantity(
+    db: Session,
+    card_name: str,
+    new_total_quantity: int,
+    set_code: str = "",
+    collector_number: str = "",
+) -> InventoryRow:
+    """
+    Sets one printing row's total_quantity directly (used for both
+    +/- nudges and manual edits from the UI — the frontend computes
+    the new absolute value). Blocked if it would drop the *card's*
+    total (this printing plus every other printing of the same name)
+    below what's currently checked out across decks — deck assignments
+    aren't printing-specific yet, so availability is only meaningful at
+    the whole-card level. No force option: reducing inventory below
+    what's checked out always requires checking cards in first.
     """
     if new_total_quantity < 0:
         raise ValueError("Quantity cannot be negative.")
 
-    inv = db.query(Inventory).filter(Inventory.card_name == card_name).one_or_none()
+    set_code, collector_number = _norm_printing(set_code, collector_number)
+
+    inv = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == card_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+        )
+        .one_or_none()
+    )
     if inv is None:
-        raise ValueError(f"'{card_name}' not found in inventory.")
+        raise ValueError(f"'{card_name}' not found in inventory for that printing.")
 
     decks = _decks_for(db, card_name)
     checked_out = sum(d.quantity for d in decks)
 
-    if new_total_quantity < checked_out:
+    other_printings_total = (
+        db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
+        .filter(
+            Inventory.card_name == card_name,
+            ~((Inventory.set_code == set_code) & (Inventory.collector_number == collector_number)),
+        )
+        .scalar()
+    )
+
+    if other_printings_total + new_total_quantity < checked_out:
         raise BlockedDeleteError(card_name, decks)
 
     inv.total_quantity = new_total_quantity
     db.commit()
 
-    return InventoryRow(
-        card_name=card_name,
-        total_quantity=new_total_quantity,
-        checked_out=checked_out,
-        available=new_total_quantity - checked_out,
-        decks=decks,
+    return _build_group_row(db, card_name)
+
+
+def delete_card(
+    db: Session, card_name: str, set_code: str = "", collector_number: str = "", force: bool = False
+) -> None:
+    """
+    Removes one printing row. Blocked by default only if removing it
+    would drop the card's total below what's checked out across decks
+    (i.e. the other printings alone can't cover it) — raises
+    BlockedDeleteError so the caller can surface a 409 with the deck
+    breakdown and let the user confirm. With force=True, deletes the
+    deck_assignments too in that case.
+    """
+    set_code, collector_number = _norm_printing(set_code, collector_number)
+
+    inv = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == card_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+        )
+        .one_or_none()
     )
-
-
-def delete_card(db: Session, card_name: str, force: bool = False) -> None:
-    """
-    Removes a card from inventory entirely. Blocked by default if any
-    deck_assignments reference it — raises BlockedDeleteError so the
-    caller (API layer) can surface a 409 with the deck breakdown and let
-    the user confirm. With force=True, deletes the deck_assignments too
-    (the confirmed "remove from both" path).
-    """
-    inv = db.query(Inventory).filter(Inventory.card_name == card_name).one_or_none()
     if inv is None:
-        raise ValueError(f"'{card_name}' not found in inventory.")
+        raise ValueError(f"'{card_name}' not found in inventory for that printing.")
 
     decks = _decks_for(db, card_name)
+    checked_out = sum(d.quantity for d in decks)
 
-    if decks and not force:
+    other_printings_total = (
+        db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
+        .filter(
+            Inventory.card_name == card_name,
+            ~((Inventory.set_code == set_code) & (Inventory.collector_number == collector_number)),
+        )
+        .scalar()
+    )
+    would_shortfall = decks and other_printings_total < checked_out
+
+    if would_shortfall and not force:
         raise BlockedDeleteError(card_name, decks)
-
-    if force and decks:
+    if would_shortfall and force:
         db.query(DeckAssignment).filter(DeckAssignment.card_name == card_name).delete()
 
     db.delete(inv)
+    db.commit()
+
+
+def delete_card_group(db: Session, card_name: str, force: bool = False) -> None:
+    """
+    Deletes every printing row for card_name — the group-level delete
+    button on Manage Collection's main (collapsed) table row, mirroring
+    the old single-row delete semantics now that a name can span
+    multiple printing rows. With force=True, deletes the
+    deck_assignments too.
+    """
+    printings = db.query(Inventory).filter(Inventory.card_name == card_name).all()
+    if not printings:
+        raise ValueError(f"'{card_name}' not found in inventory.")
+
+    decks = _decks_for(db, card_name)
+    if decks and not force:
+        raise BlockedDeleteError(card_name, decks)
+    if force and decks:
+        db.query(DeckAssignment).filter(DeckAssignment.card_name == card_name).delete()
+
+    for inv in printings:
+        db.delete(inv)
     db.commit()
 
 
@@ -287,10 +552,14 @@ def bulk_add_cards(
     line against existing card names first (so "Ligtning Bolt" adds to
     the existing "Lightning Bolt" row instead of creating a near-duplicate);
     if nothing matches closely enough, a new card is created with the
-    typed name.
+    typed name. A pasted decklist carries no set/number info, so every
+    add lands in the unresolved bucket, creating it if this name's
+    copies are all currently resolved to specific printings — use the
+    Manage Collection fix-up workflow afterward to assign copies to
+    specific printings.
     """
     parsed_lines = parse_decklist(decklist_text)
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
     result = BulkResult()
 
@@ -319,7 +588,14 @@ def bulk_add_cards(
             )
             continue
 
-        inv = db.query(Inventory).filter(Inventory.card_name == matched_name).one()
+        inv = (
+            db.query(Inventory)
+            .filter(Inventory.card_name == matched_name, Inventory.set_code == "", Inventory.collector_number == "")
+            .one_or_none()
+        )
+        if inv is None:
+            inv = Inventory(card_name=matched_name, total_quantity=0)
+            db.add(inv)
         inv.total_quantity += parsed.quantity
         result.lines.append(
             BulkLineResult(parsed.raw_line, matched_name, parsed.quantity, parsed.quantity, "ok")
@@ -341,9 +617,15 @@ def bulk_remove_cards(
     deck's assignment exceed what you own. If the requested removal
     would go below that floor, only the safe portion is removed and the
     line is marked "partial" with an explanation.
+
+    A pasted line carries no set/number info, so removal draws from the
+    unresolved bucket first, then falls back to specific printings (in
+    set/number order) if the unresolved bucket alone isn't enough —
+    preferring to consume the least-specific data before touching
+    copies already resolved to a known printing.
     """
     parsed_lines = parse_decklist(decklist_text)
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
     result = BulkResult()
     already_removed: dict[str, int] = {}  # running guard for duplicate lines in one paste
@@ -369,18 +651,27 @@ def bulk_remove_cards(
             )
             continue
 
-        inv = db.query(Inventory).filter(Inventory.card_name == matched_name).one()
+        printings = db.query(Inventory).filter(Inventory.card_name == matched_name).all()
+        printings.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
+        group_total = sum(p.total_quantity for p in printings)
+
         decks = _decks_for(db, matched_name)
         checked_out = sum(d.quantity for d in decks)
 
         already_claimed = already_removed.get(matched_name, 0)
-        removable_floor = checked_out  # can't drop total below what's checked out
-        currently_removable = max(0, inv.total_quantity - already_claimed - removable_floor)
+        removable_floor = checked_out  # can't drop the card's total below what's checked out
+        currently_removable = max(0, group_total - already_claimed - removable_floor)
 
         to_remove = min(currently_removable, parsed.quantity)
 
         if to_remove > 0:
-            inv.total_quantity -= to_remove
+            remaining = to_remove
+            for p in printings:
+                if remaining <= 0:
+                    break
+                take = min(p.total_quantity, remaining)
+                p.total_quantity -= take
+                remaining -= take
             already_removed[matched_name] = already_claimed + to_remove
 
         status = "ok" if to_remove == parsed.quantity else ("partial" if to_remove > 0 else "not_found")

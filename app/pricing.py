@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .models import Inventory, CardPrice
@@ -288,9 +289,18 @@ def get_collection_value(db: Session) -> dict:
     when the most recent price was cached, so the UI can show
     "as of ...".
     """
+    # CardPrice is still keyed by name alone (see models.py), while
+    # Inventory can now have multiple printing rows per name — sum
+    # quantity per name first so a name with several printings counts
+    # as one priced/unpriced card, not one per printing row.
+    inv_totals = (
+        db.query(Inventory.card_name, func.sum(Inventory.total_quantity).label("total_quantity"))
+        .group_by(Inventory.card_name)
+        .subquery()
+    )
     rows = (
-        db.query(Inventory, CardPrice)
-        .outerjoin(CardPrice, Inventory.card_name == CardPrice.card_name)
+        db.query(inv_totals.c.card_name, inv_totals.c.total_quantity, CardPrice)
+        .outerjoin(CardPrice, inv_totals.c.card_name == CardPrice.card_name)
         .all()
     )
 
@@ -299,9 +309,9 @@ def get_collection_value(db: Session) -> dict:
     unpriced_cards = 0
     last_updated = None
 
-    for inv, price in rows:
+    for card_name, total_quantity, price in rows:
         if price is not None and price.price_usd is not None:
-            total_value += price.price_usd * inv.total_quantity
+            total_value += price.price_usd * total_quantity
             priced_cards += 1
             if price.updated_at and (last_updated is None or price.updated_at > last_updated):
                 last_updated = price.updated_at

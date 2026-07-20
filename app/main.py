@@ -36,6 +36,9 @@ from .inventory_admin import (
     add_card,
     adjust_quantity,
     delete_card,
+    delete_card_group,
+    assign_printing,
+    get_printings_for_card,
     bulk_add_cards,
     bulk_remove_cards,
     get_owned_quantity,
@@ -53,6 +56,7 @@ from .homepage import get_summary, get_deck_shortcuts, get_deck_meta, set_favori
 from .deck_admin import rename_deck, delete_deck, DeckNotFoundError, DuplicateDeckError
 from .card_lookup import lookup_card, record_card_view, get_recent_cards
 from .pokemon_lookup import lookup_card as pokemon_lookup_card
+from .sets_cache import search_sets
 
 app = FastAPI(title="MTG Inventory Manager")
 
@@ -171,6 +175,13 @@ def session_set_game(
         raise HTTPException(status_code=400, detail=f"game must be one of {GAMES}.")
     request.session["game"] = req.game
     return {"game": req.game}
+
+
+@app.get("/api/sets")
+def get_sets_endpoint(q: str = "", game: str = Depends(get_current_game)):
+    """Set autocomplete for the current game — backs the Set field on
+    Manage Collection's 'Add a card' form and the fix-up workflow."""
+    return {"sets": search_sets(game, q)}
 
 
 class ChangePasswordRequest(BaseModel):
@@ -400,20 +411,25 @@ def card_lookup(name: str, db: Session = Depends(get_db), game: str = Depends(ge
     if result is None:
         raise HTTPException(status_code=404, detail=f"No {provider_name} match found for '{name}'.")
     record_card_view(db, result)
-    result["owned_quantity"] = get_owned_quantity(db, result["inventory_name"])
+    result["owned_quantity"] = get_owned_quantity(
+        db, result["inventory_name"], result.get("set_code") or "", result.get("collector_number") or ""
+    )
     return result
 
 
 class QuickAddRequest(BaseModel):
     card_name: str
+    set_code: str = ""
+    collector_number: str = ""
 
 
 @app.post("/api/inventory/quick-add")
 def inventory_quick_add(req: QuickAddRequest, db: Session = Depends(get_db)):
-    """Card Search's 'Add to Inventory' button — adds exactly one copy,
-    incrementing an existing (fuzzy-matched) row or creating a new
-    one."""
-    row = add_one_copy(db, req.card_name)
+    """Card Search's 'Add to Inventory' button — adds exactly one copy
+    of the exact printing shown (falling back to the unresolved bucket
+    if no set/number is given), incrementing an existing (fuzzy-matched
+    on name) row or creating a new one."""
+    row = add_one_copy(db, req.card_name, req.set_code, req.collector_number)
     return _row_to_dict(row)
 
 
@@ -462,10 +478,29 @@ async def bulk_upload(
 class AddCardRequest(BaseModel):
     card_name: str
     total_quantity: int
+    set_code: str = ""
+    collector_number: str = ""
 
 
 class AdjustQuantityRequest(BaseModel):
     total_quantity: int
+    set_code: str = ""
+    collector_number: str = ""
+
+
+class AssignPrintingRequest(BaseModel):
+    quantity: int
+    set_code: str
+    collector_number: str
+
+
+def _printing_to_dict(p):
+    return {
+        "set_code": p.set_code,
+        "collector_number": p.collector_number,
+        "total_quantity": p.total_quantity,
+        "is_unresolved": p.is_unresolved,
+    }
 
 
 def _row_to_dict(row):
@@ -477,6 +512,9 @@ def _row_to_dict(row):
         "decks": [{"deck_name": d.deck_name, "quantity": d.quantity} for d in row.decks],
         "price_usd": row.price_usd,
         "line_value": row.line_value,
+        "printing_count": row.printing_count,
+        "has_unresolved": row.has_unresolved,
+        "printings": [_printing_to_dict(p) for p in row.printings],
     }
 
 
@@ -513,14 +551,14 @@ def get_inventory_names(db: Session = Depends(get_db)):
     """Every card name in inventory, unpaginated — powers the 'Add a
     card to this deck' autocomplete in View Decks, which needs the full
     list rather than one page of it."""
-    rows = db.query(Inventory.card_name).order_by(Inventory.card_name.asc()).all()
+    rows = db.query(Inventory.card_name).distinct().order_by(Inventory.card_name.asc()).all()
     return {"card_names": [r.card_name for r in rows]}
 
 
 @app.post("/api/inventory")
 def create_card(req: AddCardRequest, db: Session = Depends(get_db)):
     try:
-        row = add_card(db, req.card_name, req.total_quantity)
+        row = add_card(db, req.card_name, req.total_quantity, req.set_code, req.collector_number)
     except DuplicateCardError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -528,10 +566,33 @@ def create_card(req: AddCardRequest, db: Session = Depends(get_db)):
     return _row_to_dict(row)
 
 
+@app.get("/api/inventory/{card_name}/printings")
+def get_card_printings(card_name: str, db: Session = Depends(get_db)):
+    """Per-printing breakdown for one card name — powers expanding a
+    Manage Collection row and the fix-up modal."""
+    printings = get_printings_for_card(db, card_name)
+    return {"printings": [_printing_to_dict(p) for p in printings]}
+
+
+@app.post("/api/inventory/{card_name}/assign-printing")
+def assign_printing_endpoint(card_name: str, req: AssignPrintingRequest, db: Session = Depends(get_db)):
+    """Fix-up workflow: moves `quantity` copies of card_name out of the
+    unresolved bucket and into a specific (set_code, collector_number)
+    printing."""
+    try:
+        row = assign_printing(db, card_name, req.quantity, req.set_code, req.collector_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _row_to_dict(row)
+
+
 @app.patch("/api/inventory/{card_name}")
 def update_card_quantity(card_name: str, req: AdjustQuantityRequest, db: Session = Depends(get_db)):
+    """Sets one printing's total_quantity — set_code/collector_number
+    default to the unresolved bucket, which is also the only printing
+    a simple (not-yet-expanded) card has."""
     try:
-        row = adjust_quantity(db, card_name, req.total_quantity)
+        row = adjust_quantity(db, card_name, req.total_quantity, req.set_code, req.collector_number)
     except BlockedDeleteError as e:
         raise HTTPException(
             status_code=409,
@@ -547,8 +608,11 @@ def update_card_quantity(card_name: str, req: AdjustQuantityRequest, db: Session
 
 @app.delete("/api/inventory/{card_name}")
 def remove_card(card_name: str, force: bool = False, db: Session = Depends(get_db)):
+    """Deletes every printing of card_name — the delete button on
+    Manage Collection's main (collapsed) row. For deleting just one
+    printing, see DELETE /api/inventory/{card_name}/printing."""
     try:
-        delete_card(db, card_name, force=force)
+        delete_card_group(db, card_name, force=force)
     except BlockedDeleteError as e:
         raise HTTPException(
             status_code=409,
@@ -560,6 +624,30 @@ def remove_card(card_name: str, force: bool = False, db: Session = Depends(get_d
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"deleted": card_name, "force": force}
+
+
+@app.delete("/api/inventory/{card_name}/printing")
+def remove_card_printing(
+    card_name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Deletes just one printing row — used from the expanded per-printing view."""
+    try:
+        delete_card(db, card_name, set_code=set_code, collector_number=collector_number, force=force)
+    except BlockedDeleteError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(e),
+                "decks": [{"deck_name": d.deck_name, "quantity": d.quantity} for d in e.decks],
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"deleted": card_name, "set_code": set_code, "collector_number": collector_number, "force": force}
 
 
 class BulkInventoryRequest(BaseModel):

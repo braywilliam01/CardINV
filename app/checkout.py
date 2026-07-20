@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .models import Inventory, DeckAssignment, DeckMeta
@@ -37,7 +38,7 @@ def checkout_cards(
     available, 2 are checked out and the line is marked "partial".
     """
     parsed_lines = parse_decklist(decklist_text)
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
     result = ActionResult()
     reserved: dict[str, int] = {}  # running deduction guard, keyed by canonical DB name
@@ -228,7 +229,7 @@ def sync_checkout(
     applies normally.
     """
     parsed_lines = parse_decklist(decklist_text)
-    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
     targets: dict[str, int] = {}
     warnings: list[str] = []
@@ -385,9 +386,17 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
 
     card_names = [a.card_name for a in assignments]
 
+    # Summed per name, not one row per name — a name can now have
+    # multiple printing rows (see models.py), and this deck view isn't
+    # printing-aware yet, so "on the shelf" means every printing combined.
     inv_map = {
-        row.card_name: row.total_quantity
-        for row in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all()
+        row.card_name: row.total
+        for row in db.query(
+            Inventory.card_name, func.sum(Inventory.total_quantity).label("total")
+        )
+        .filter(Inventory.card_name.in_(card_names))
+        .group_by(Inventory.card_name)
+        .all()
     }
 
     checked_out_map: dict[str, int] = {}

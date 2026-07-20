@@ -8,8 +8,45 @@
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
 
+<!-- Hamburger menu button — fixed top-left, visible on every view -->
+<button id="menu-btn" type="button" aria-label="Open menu"
+  class="fixed top-4 left-4 z-30 w-10 h-10 flex items-center justify-center rounded-lg bg-slate-900 border border-slate-700 hover:border-indigo-500 text-slate-300 hover:text-indigo-400">
+  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+  </svg>
+</button>
+
+<!-- Side drawer backdrop -->
+<div id="drawer-backdrop" class="fixed inset-0 bg-black/60 z-40 hidden"></div>
+
+<!-- Side drawer -->
+<nav id="side-drawer" class="fixed top-0 left-0 h-full w-64 bg-slate-900 border-r border-slate-700 z-50 -translate-x-full transition-transform duration-200 p-4">
+  <div class="flex items-center justify-between mb-6">
+    <span class="font-bold text-slate-100">Menu</span>
+    <button id="drawer-close-btn" type="button" aria-label="Close menu" class="text-slate-400 hover:text-slate-200 text-xl leading-none">&times;</button>
+  </div>
+  <div class="flex flex-col gap-1">
+    <button type="button" data-nav="home" class="nav-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
+      Homepage
+    </button>
+    <div class="border-t border-slate-800 my-2"></div>
+    <button type="button" data-tab="manage" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
+      Manage Collection
+    </button>
+    <button type="button" data-tab="decks" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
+      View Decks
+    </button>
+    <button type="button" data-tab="search" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
+      Collection Search
+    </button>
+    <button type="button" data-tab="checkout" class="nav-link tab-link text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800">
+      Deck Checkout
+    </button>
+  </div>
+</nav>
+
 <div class="max-w-5xl mx-auto p-4 sm:p-6">
-  <button id="site-title-btn" type="button" class="text-2xl font-bold mb-6 hover:text-indigo-400 transition-colors">
+  <button id="site-title-btn" type="button" class="text-2xl font-bold mb-6 ml-12 hover:text-indigo-400 transition-colors">
     MTG Inventory Manager
   </button>
 
@@ -36,30 +73,10 @@
     <div id="home-deck-shortcuts-empty" class="text-slate-500 text-sm mb-6 hidden">
       No decks yet — check some cards out to a deck to see shortcuts here.
     </div>
-
-    <button id="home-open-app-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm mt-3">
-      Open App →
-    </button>
   </section>
 
   <!-- ===================== APP ===================== -->
   <div id="view-app" class="hidden">
-
-  <!-- Tabs -->
-  <div class="flex gap-1 sm:gap-2 mb-6 border-b border-slate-700 overflow-x-auto whitespace-nowrap -mx-4 px-4 sm:mx-0 sm:px-0">
-    <button data-tab="manage" class="tab-btn flex-shrink-0 px-3 sm:px-4 py-2 text-sm sm:text-base font-medium border-b-2 border-indigo-500 text-indigo-400">
-      Manage Collection
-    </button>
-    <button data-tab="decks" class="tab-btn flex-shrink-0 px-3 sm:px-4 py-2 text-sm sm:text-base font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-      View Decks
-    </button>
-    <button data-tab="search" class="tab-btn flex-shrink-0 px-3 sm:px-4 py-2 text-sm sm:text-base font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-      Collection Search
-    </button>
-    <button data-tab="checkout" class="tab-btn flex-shrink-0 px-3 sm:px-4 py-2 text-sm sm:text-base font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-      Deck Checkout
-    </button>
-  </div>
 
   <!-- ===================== TAB 1: SEARCH ===================== -->
   <section id="tab-search" class="tab-panel hidden">

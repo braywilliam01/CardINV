@@ -3,12 +3,11 @@ const DEFAULT_APP_TAB = "manage";
 
 // ---------- Tab switching ----------
 async function activateTab(tabName) {
-  document.querySelectorAll(".tab-btn").forEach((b) => {
-    const active = b.dataset.tab === tabName;
-    b.classList.toggle("border-indigo-500", active);
-    b.classList.toggle("text-indigo-400", active);
-    b.classList.toggle("border-transparent", !active);
-    b.classList.toggle("text-slate-400", !active);
+  document.querySelectorAll(".tab-link").forEach((el) => {
+    const active = el.dataset.tab === tabName;
+    el.classList.toggle("bg-slate-800", active);
+    el.classList.toggle("text-indigo-400", active);
+    el.classList.toggle("text-slate-300", !active);
   });
 
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.add("hidden"));
@@ -20,8 +19,33 @@ async function activateTab(tabName) {
   if (tabName === "decks") await loadDecksTab();
 }
 
-document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+// ---------- Side drawer ----------
+function openDrawer() {
+  document.getElementById("side-drawer").classList.remove("-translate-x-full");
+  document.getElementById("drawer-backdrop").classList.remove("hidden");
+}
+
+function closeDrawer() {
+  document.getElementById("side-drawer").classList.add("-translate-x-full");
+  document.getElementById("drawer-backdrop").classList.add("hidden");
+}
+
+document.getElementById("menu-btn").addEventListener("click", openDrawer);
+document.getElementById("drawer-backdrop").addEventListener("click", closeDrawer);
+document.getElementById("drawer-close-btn").addEventListener("click", closeDrawer);
+
+document.querySelectorAll(".nav-link[data-nav='home']").forEach((el) => {
+  el.addEventListener("click", () => {
+    showHomeView();
+    closeDrawer();
+  });
+});
+
+document.querySelectorAll(".tab-link").forEach((el) => {
+  el.addEventListener("click", () => {
+    showAppView(el.dataset.tab);
+    closeDrawer();
+  });
 });
 
 // ---------- Homepage / app view switching ----------
@@ -38,7 +62,6 @@ async function showAppView(tabName) {
 }
 
 document.getElementById("site-title-btn").addEventListener("click", showHomeView);
-document.getElementById("home-open-app-btn").addEventListener("click", () => showAppView());
 
 async function loadHomepage() {
   try {

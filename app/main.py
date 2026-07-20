@@ -469,6 +469,9 @@ async def bulk_upload(
         "total_quantity_loaded": result.total_quantity_loaded,
         "assignments_preserved": result.assignments_preserved,
         "skipped_basic_lands": result.skipped_basic_lands,
+        "printings_added": result.printings_added,
+        "printings_updated": result.printings_updated,
+        "printings_removed": result.printings_removed,
         "warnings": result.warnings,
     }
 

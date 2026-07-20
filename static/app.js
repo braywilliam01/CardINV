@@ -761,7 +761,10 @@ document.getElementById("csv-upload-btn").addEventListener("click", async () => 
     const container = document.getElementById("bulk-result");
     container.innerHTML = `
       <div class="text-emerald-400">
-        ✓ Loaded ${data.unique_cards_loaded} unique cards (${data.total_quantity_loaded} total copies).
+        ✓ Reconciled ${data.unique_cards_loaded} unique cards (${data.total_quantity_loaded} total copies):
+        ${data.printings_added} printing${data.printings_added === 1 ? "" : "s"} added,
+        ${data.printings_updated} updated,
+        ${data.printings_removed} removed.
         ${data.assignments_preserved} deck assignments preserved.
       </div>
     `;

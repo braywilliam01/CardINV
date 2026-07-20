@@ -6,3 +6,4 @@ data/
 backups/*.db
 seed-data/*.csv
 .env
+scripts/

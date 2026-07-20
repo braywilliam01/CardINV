@@ -466,12 +466,18 @@
       <!-- Quick add to deck -->
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
         <h3 class="font-semibold mb-3 text-sm text-slate-300">Add a card to this deck</h3>
-        <div class="flex flex-wrap gap-2">
+        <div class="flex flex-wrap gap-2 mb-2">
           <input id="deck-add-card-name" list="inventory-card-list" type="text" placeholder="Card name"
             class="flex-1 min-w-[140px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
           <datalist id="inventory-card-list"></datalist>
           <input id="deck-add-card-qty" type="number" min="1" value="1"
             class="w-20 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <input id="deck-add-card-set" list="add-card-set-list" type="text" placeholder="Set (optional — pins a printing)"
+            class="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <input id="deck-add-card-number" type="text" placeholder="Collector # (optional)"
+            class="w-44 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
           <button id="deck-add-card-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
             Add
           </button>

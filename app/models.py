@@ -26,22 +26,36 @@ class Inventory(Base):
 
 class DeckAssignment(Base):
     """
-    Deliberately still keyed by card_name alone (no printing
-    reference) — deck assignments stay "any printing" for now.
-    card_name has no FK to Inventory: once card_name alone isn't
-    unique there, a single-column FK target isn't valid, and
-    referential integrity here was already informal in practice (e.g.
-    basic lands get assignment rows with no Inventory row at all).
+    Identity is (card_name, deck_name, set_code, collector_number) — a
+    deck can hold several printings of the same name as separate rows
+    (e.g. 2 copies drawn from an unresolved bucket plus 1 from a
+    specific printing). set_code/collector_number default to "" (the
+    same sentinel as Inventory/CardPrice), used when a checkout wasn't
+    pinned to a specific printing — see checkout.py's cheapest-first
+    draw-down and printing-pinning, and parser.py for how a pasted
+    line's trailing "(SET) NUM" becomes a pin. A checked-out row is
+    always printing-concrete once created (even the "" / "" row is a
+    specific, trackable slice of the unresolved bucket) — "pinned vs.
+    unpinned" is a property of a *request*, not of a stored row.
+
+    No FK to Inventory: even a single-column FK isn't valid once
+    card_name alone isn't unique there, and referential integrity here
+    was already informal in practice (e.g. basic lands get assignment
+    rows with no Inventory row at all).
     """
     __tablename__ = "deck_assignments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     card_name = Column(String, nullable=False, index=True)
     deck_name = Column(String, nullable=False, index=True)
+    set_code = Column(String, nullable=False, default="")
+    collector_number = Column(String, nullable=False, default="")
     quantity = Column(Integer, nullable=False, default=0)
 
     __table_args__ = (
-        UniqueConstraint("card_name", "deck_name", name="uq_card_deck"),
+        UniqueConstraint(
+            "card_name", "deck_name", "set_code", "collector_number", name="uq_card_deck_printing"
+        ),
     )
 
 

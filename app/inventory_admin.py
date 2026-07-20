@@ -107,12 +107,18 @@ class DuplicateCardError(Exception):
 
 
 def _decks_for(db: Session, card_name: str) -> list[DeckHold]:
+    """Which decks hold this card, and how much — summed across
+    printings: a deck can now hold several DeckAssignment rows for the
+    same name (one per printing it drew from — see checkout.py), and
+    "how much of this card is checked out to Deck X" is a per-deck
+    total, not a per-printing one."""
     rows = (
-        db.query(DeckAssignment)
+        db.query(DeckAssignment.deck_name, func.sum(DeckAssignment.quantity).label("total"))
         .filter(DeckAssignment.card_name == card_name, DeckAssignment.quantity > 0)
+        .group_by(DeckAssignment.deck_name)
         .all()
     )
-    return [DeckHold(deck_name=r.deck_name, quantity=r.quantity) for r in rows]
+    return [DeckHold(deck_name=r.deck_name, quantity=r.total) for r in rows]
 
 
 def _to_printing_row(inv: Inventory, price: CardPrice | None) -> PrintingRow:
@@ -223,12 +229,16 @@ def list_inventory(
             (p.card_name, p.set_code, p.collector_number): p
             for p in db.query(CardPrice).filter(CardPrice.card_name.in_(card_names)).all()
         }
-        for a in (
-            db.query(DeckAssignment)
+        for card_name, deck_name, total in (
+            db.query(
+                DeckAssignment.card_name, DeckAssignment.deck_name,
+                func.sum(DeckAssignment.quantity).label("total"),
+            )
             .filter(DeckAssignment.card_name.in_(card_names), DeckAssignment.quantity > 0)
+            .group_by(DeckAssignment.card_name, DeckAssignment.deck_name)
             .all()
         ):
-            deck_map.setdefault(a.card_name, []).append(DeckHold(deck_name=a.deck_name, quantity=a.quantity))
+            deck_map.setdefault(card_name, []).append(DeckHold(deck_name=deck_name, quantity=total))
         for inv in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all():
             printing_map.setdefault(inv.card_name, []).append(inv)
 
@@ -535,7 +545,15 @@ def delete_card(
     if would_shortfall and not force:
         raise BlockedDeleteError(card_name, decks)
     if would_shortfall and force:
-        db.query(DeckAssignment).filter(DeckAssignment.card_name == card_name).delete()
+        # Deck assignments are printing-concrete (see models.py) — only
+        # the ones actually pinned to *this* printing become invalid;
+        # assignments drawn from other printings, or the unresolved
+        # bucket, are untouched.
+        db.query(DeckAssignment).filter(
+            DeckAssignment.card_name == card_name,
+            DeckAssignment.set_code == set_code,
+            DeckAssignment.collector_number == collector_number,
+        ).delete()
 
     db.delete(inv)
     db.commit()

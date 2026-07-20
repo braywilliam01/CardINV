@@ -617,10 +617,17 @@ async function loadDeckIntoCheckoutBox(deckName) {
   try {
     const res = await fetch(`${API_BASE}/decks/${encodeURIComponent(deckName)}/cards`);
     const data = await res.json();
+    // Round-trips through parser.py: a resolved printing renders with
+    // its "(SET) NUM" pin, so editing quantities and syncing back
+    // targets the same printings rather than re-drawing cheapest-first.
     const lines = data.cards
       .slice()
-      .sort((a, b) => a.card_name.localeCompare(b.card_name))
-      .map((c) => `${c.quantity} ${c.card_name}`);
+      .sort((a, b) =>
+        a.card_name.localeCompare(b.card_name)
+        || a.set_code.localeCompare(b.set_code)
+        || a.collector_number.localeCompare(b.collector_number)
+      )
+      .map((c) => buildDecklistLine(c.quantity, c.card_name, c.set_code, c.collector_number));
     document.getElementById("checkout-input").value = lines.join("\n");
   } catch (err) {
     console.error("Failed to load deck contents into checkout box:", err);
@@ -654,9 +661,10 @@ function renderSyncResults(lines, warnings, errors) {
     const div = document.createElement("div");
     div.className = statusColor[line.status] || "text-slate-300";
     const deltaLabel = line.applied_delta > 0 ? `+${line.applied_delta}` : `${line.applied_delta}`;
+    const printingNote = line.set_code || line.collector_number ? ` (${line.set_code} #${line.collector_number})` : "";
     div.textContent = line.message
-      ? `[${line.status}] ${line.card_name}: ${line.current_qty} → ${line.target_qty} (${deltaLabel}) — ${line.message}`
-      : `[${line.status}] ${line.card_name}: ${line.current_qty} → ${line.target_qty} (${deltaLabel})`;
+      ? `[${line.status}] ${line.card_name}${printingNote}: ${line.current_qty} → ${line.target_qty} (${deltaLabel}) — ${line.message}`
+      : `[${line.status}] ${line.card_name}${printingNote}: ${line.current_qty} → ${line.target_qty} (${deltaLabel})`;
     container.appendChild(div);
   });
 
@@ -1358,24 +1366,32 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
   }
 });
 
-// ---------- Set autocomplete (backs Add a card's Set field and the fix-up form) ----------
+// ---------- Set autocomplete (backs every Set field: Add a card, the
+// fix-up form, and Add a card to this deck — all share the
+// "add-card-set-list" datalist) ----------
 let setAutocompleteDebounce;
-document.getElementById("add-card-set").addEventListener("input", (e) => {
-  clearTimeout(setAutocompleteDebounce);
-  const q = e.target.value.trim();
-  setAutocompleteDebounce = setTimeout(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/sets?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      const datalist = document.getElementById("add-card-set-list");
-      datalist.innerHTML = (data.sets || [])
-        .map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)} (${escapeHtml(s.code)})</option>`)
-        .join("");
-    } catch (err) {
-      console.error("Failed to load sets:", err);
-    }
-  }, 200);
-});
+function wireSetAutocomplete(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  input.addEventListener("input", (e) => {
+    clearTimeout(setAutocompleteDebounce);
+    const q = e.target.value.trim();
+    setAutocompleteDebounce = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/sets?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        const datalist = document.getElementById("add-card-set-list");
+        datalist.innerHTML = (data.sets || [])
+          .map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)} (${escapeHtml(s.code)})</option>`)
+          .join("");
+      } catch (err) {
+        console.error("Failed to load sets:", err);
+      }
+    }, 200);
+  });
+}
+wireSetAutocomplete("add-card-set");
+wireSetAutocomplete("deck-add-card-set");
 
 // ---------- Tab 4 (cont'd): Bulk Add / Remove ----------
 function renderBulkInvResults(lines, warnings, skippedBasics) {
@@ -1692,9 +1708,17 @@ function renderDeckTable(deckName, cards) {
     tr.className = "border-b border-slate-800";
 
     const canAddOne = card.available_more > 0;
+    // A deck can hold several rows for the same name — one per
+    // printing it was drawn from (see checkout.py's cheapest-first
+    // draw-down) — so each row is labeled with its printing, and its
+    // own +1/-1/Remove all act on exactly that printing (pinned),
+    // never the name-wide pool.
+    const printingLabel = card.set_code || card.collector_number
+      ? `<span class="text-xs text-slate-500"> (${escapeHtml(card.set_code)} #${escapeHtml(card.collector_number)})</span>`
+      : "";
 
     tr.innerHTML = `
-      <td class="py-2 pr-2">${escapeHtml(card.card_name)}</td>
+      <td class="py-2 pr-2">${escapeHtml(card.card_name)}${printingLabel}</td>
       <td class="py-2 px-2">${card.quantity}</td>
       <td class="py-2 px-2">
         <div class="flex gap-1">
@@ -1706,14 +1730,17 @@ function renderDeckTable(deckName, cards) {
     `;
 
     tr.querySelector(".deck-minus-one").addEventListener("click", () => {
-      quickCheckin(deckName, card.card_name, 1);
+      quickCheckin(deckName, card.card_name, 1, card.set_code, card.collector_number);
     });
     tr.querySelector(".deck-plus-one").addEventListener("click", () => {
-      if (canAddOne) quickCheckout(deckName, card.card_name, 1);
+      if (canAddOne) quickCheckout(deckName, card.card_name, 1, card.set_code, card.collector_number);
     });
     tr.querySelector(".deck-remove-all").addEventListener("click", () => {
-      if (confirm(`Remove all ${card.quantity}x '${card.card_name}' from '${deckName}'?`)) {
-        quickCheckin(deckName, card.card_name, card.quantity);
+      const label = card.set_code || card.collector_number
+        ? `${card.card_name} (${card.set_code} #${card.collector_number})`
+        : card.card_name;
+      if (confirm(`Remove all ${card.quantity}x '${label}' from '${deckName}'?`)) {
+        quickCheckin(deckName, card.card_name, card.quantity, card.set_code, card.collector_number);
       }
     });
 
@@ -1721,13 +1748,21 @@ function renderDeckTable(deckName, cards) {
   });
 }
 
-async function quickCheckout(deckName, cardName, qty) {
+// Builds a pasteable decklist line, appending the "(SET) NUM" pin when
+// a printing is given — the same round-trip format loadDeckIntoCheckoutBox
+// reads back and parser.py parses out server-side.
+function buildDecklistLine(qty, cardName, setCode = "", collectorNumber = "") {
+  const suffix = setCode || collectorNumber ? ` (${setCode}) ${collectorNumber}` : "";
+  return `${qty} ${cardName}${suffix}`;
+}
+
+async function quickCheckout(deckName, cardName, qty, setCode = "", collectorNumber = "") {
   try {
     const res = await fetch(`${API_BASE}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        decklist_text: `${qty} ${cardName}`,
+        decklist_text: buildDecklistLine(qty, cardName, setCode, collectorNumber),
         deck_name: deckName,
         fuzzy_threshold: DECK_ACTION_THRESHOLD,
       }),
@@ -1745,13 +1780,13 @@ async function quickCheckout(deckName, cardName, qty) {
   }
 }
 
-async function quickCheckin(deckName, cardName, qty) {
+async function quickCheckin(deckName, cardName, qty, setCode = "", collectorNumber = "") {
   try {
     const res = await fetch(`${API_BASE}/checkin`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        decklist_text: `${qty} ${cardName}`,
+        decklist_text: buildDecklistLine(qty, cardName, setCode, collectorNumber),
         deck_name: deckName,
         fuzzy_threshold: DECK_ACTION_THRESHOLD,
       }),
@@ -1773,6 +1808,8 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
   const deckName = getEffectiveDeckName();
   const nameInput = document.getElementById("deck-add-card-name");
   const qtyInput = document.getElementById("deck-add-card-qty");
+  const setInput = document.getElementById("deck-add-card-set");
+  const numberInput = document.getElementById("deck-add-card-number");
   const msgEl = document.getElementById("deck-add-msg");
 
   if (!deckName) {
@@ -1782,6 +1819,8 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
 
   const cardName = nameInput.value.trim();
   const qty = parseInt(qtyInput.value, 10);
+  const setCode = setInput.value.trim();
+  const collectorNumber = numberInput.value.trim();
 
   if (!cardName) {
     msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
@@ -1797,7 +1836,7 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        decklist_text: `${qty} ${cardName}`,
+        decklist_text: buildDecklistLine(qty, cardName, setCode, collectorNumber),
         deck_name: deckName,
         fuzzy_threshold: DECK_ACTION_THRESHOLD,
       }),
@@ -1814,6 +1853,8 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
 
     nameInput.value = "";
     qtyInput.value = "1";
+    setInput.value = "";
+    numberInput.value = "";
     await afterDeckMutation(deckName);
   } catch (err) {
     msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;

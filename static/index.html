@@ -68,11 +68,37 @@
       </div>
     </div>
 
-    <h3 class="font-semibold mb-3 text-sm text-slate-300">Quick Access</h3>
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-6">
+      <h3 class="font-semibold mb-3 text-sm text-slate-300">Card Search</h3>
+      <div class="flex flex-wrap gap-2">
+        <input id="card-search-input" type="text" placeholder="Card name..."
+          class="flex-1 min-w-[160px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <button id="card-search-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
+          Search
+        </button>
+      </div>
+      <div id="card-search-msg" class="text-sm mt-2"></div>
+    </div>
+
+    <h3 class="font-semibold mb-3 text-sm text-slate-300">Last Viewed</h3>
+    <div id="home-recent-cards" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3"></div>
+    <div id="home-recent-cards-empty" class="text-slate-500 text-sm mb-6 hidden">
+      No cards viewed yet — search for one above.
+    </div>
+
+    <h3 class="font-semibold mb-3 text-sm text-slate-300">Deck Access</h3>
     <div id="home-deck-shortcuts" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3"></div>
     <div id="home-deck-shortcuts-empty" class="text-slate-500 text-sm mb-6 hidden">
       No decks yet — check some cards out to a deck to see shortcuts here.
     </div>
+  </section>
+
+  <!-- ===================== CARD DETAIL ===================== -->
+  <section id="view-card" class="hidden">
+    <button id="card-back-btn" type="button" class="text-sm text-indigo-400 hover:text-indigo-300 mb-4">
+      ← Back to Homepage
+    </button>
+    <div id="card-detail-content"></div>
   </section>
 
   <!-- ===================== APP ===================== -->
@@ -130,6 +156,7 @@
           <input id="output-deck-name" list="deck-list" type="text"
             class="flex-1 min-w-[140px] bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm"
             placeholder="New or existing deck name...">
+          <datalist id="deck-list"></datalist>
           <button id="output-add-to-deck-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
             Add to Deck
           </button>
@@ -146,13 +173,22 @@
 
   <!-- ===================== TAB 2: CHECKOUT ===================== -->
   <section id="tab-checkout" class="tab-panel hidden">
-    <label class="block text-sm text-slate-400 mb-1">Deck name</label>
-    <input id="deck-name-input" list="deck-list" type="text"
-      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-4"
-      placeholder="Type or select a deck name...">
-    <datalist id="deck-list"></datalist>
+    <label class="block text-sm text-slate-400 mb-1">Deck</label>
+    <select id="checkout-deck-select"
+      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-2">
+      <option value="">-- choose a deck --</option>
+      <option value="__new__">+ New Deck</option>
+    </select>
+    <input id="checkout-new-deck-name" type="text"
+      class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-4 hidden"
+      placeholder="New deck name...">
 
     <label class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
+    <p class="text-xs text-slate-500 mb-1">
+      Selecting an existing deck loads its current contents below. Edit the quantities to the
+      totals you want, then Check Out to add up to those totals or Check In to reduce down to them —
+      lines you delete entirely are checked all the way in.
+    </p>
     <textarea id="checkout-input" rows="10" maxlength="5100"
       class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"></textarea>
 

@@ -14,7 +14,7 @@ async function activateTab(tabName) {
   document.getElementById(`tab-${tabName}`).classList.remove("hidden");
 
   if (tabName === "search") loadDeckList();
-  if (tabName === "checkout") loadDeckList();
+  if (tabName === "checkout") loadCheckoutDeckSelect();
   if (tabName === "manage") { loadInventory(); loadPricingSummary(); }
   if (tabName === "decks") await loadDecksTab();
 }
@@ -52,25 +52,35 @@ document.querySelectorAll(".tab-link").forEach((el) => {
 function showHomeView() {
   document.getElementById("view-home").classList.remove("hidden");
   document.getElementById("view-app").classList.add("hidden");
+  document.getElementById("view-card").classList.add("hidden");
   loadHomepage();
 }
 
 async function showAppView(tabName) {
   document.getElementById("view-home").classList.add("hidden");
+  document.getElementById("view-card").classList.add("hidden");
   document.getElementById("view-app").classList.remove("hidden");
   await activateTab(tabName || DEFAULT_APP_TAB);
+}
+
+function showCardView() {
+  document.getElementById("view-home").classList.add("hidden");
+  document.getElementById("view-app").classList.add("hidden");
+  document.getElementById("view-card").classList.remove("hidden");
 }
 
 document.getElementById("site-title-btn").addEventListener("click", showHomeView);
 
 async function loadHomepage() {
   try {
-    const [summaryRes, shortcutsRes] = await Promise.all([
+    const [summaryRes, shortcutsRes, recentCardsRes] = await Promise.all([
       fetch(`${API_BASE}/homepage/summary`),
       fetch(`${API_BASE}/homepage/deck-shortcuts`),
+      fetch(`${API_BASE}/homepage/recent-cards`),
     ]);
     const summary = await summaryRes.json();
     const shortcuts = await shortcutsRes.json();
+    const recentCards = await recentCardsRes.json();
 
     document.getElementById("home-total-cards").textContent = summary.total_quantity.toLocaleString();
     document.getElementById("home-unique-cards").textContent = `${summary.unique_cards.toLocaleString()} unique`;
@@ -78,9 +88,46 @@ async function loadHomepage() {
     document.getElementById("home-collection-value").textContent = `$${summary.collection_value_usd.toFixed(2)}`;
 
     renderDeckShortcuts(shortcuts.decks);
+    renderRecentCards(recentCards.cards);
   } catch (err) {
     console.error("Failed to load homepage:", err);
   }
+}
+
+function renderRecentCards(cards) {
+  const container = document.getElementById("home-recent-cards");
+  const emptyMsg = document.getElementById("home-recent-cards-empty");
+  container.innerHTML = "";
+
+  if (cards.length === 0) {
+    emptyMsg.classList.remove("hidden");
+    return;
+  }
+  emptyMsg.classList.add("hidden");
+
+  cards.forEach((card) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "bg-slate-900 border border-slate-700 hover:border-indigo-500 rounded-lg p-3 text-left transition-colors flex items-center gap-3";
+    const thumb = card.image_url
+      ? `<img src="${card.image_url}" alt="" class="w-10 h-14 object-cover rounded border border-slate-700 flex-shrink-0">`
+      : `<div class="w-10 h-14 rounded border border-slate-700 bg-slate-800 flex-shrink-0"></div>`;
+    btn.innerHTML = `
+      ${thumb}
+      <div class="min-w-0">
+        <div class="font-medium text-slate-100 truncate">${escapeHtml(card.card_name)}</div>
+        <div class="text-xs text-slate-500 truncate">${escapeHtml(card.type_line || "")}</div>
+      </div>
+    `;
+    btn.addEventListener("click", () => openRecentCard(card.card_name));
+    container.appendChild(btn);
+  });
+}
+
+async function openRecentCard(cardName) {
+  document.getElementById("card-search-input").value = cardName;
+  await searchCard();
 }
 
 function renderDeckShortcuts(decks) {
@@ -114,6 +161,118 @@ async function openDeckShortcut(deckName) {
   select.value = deckName;
   select.dispatchEvent(new Event("change"));
 }
+
+// ---------- Card Search ----------
+document.getElementById("card-back-btn").addEventListener("click", showHomeView);
+
+function legalityBadge(fmt, status) {
+  const label = fmt.charAt(0).toUpperCase() + fmt.slice(1);
+  const legal = status === "legal";
+  const color = legal
+    ? "bg-emerald-950/40 text-emerald-400 border-emerald-800"
+    : "bg-slate-800 text-slate-500 border-slate-700";
+  return `<span class="px-2 py-1 rounded border text-xs ${color}">${label}</span>`;
+}
+
+function renderCardFace(face) {
+  const img = face.image_url
+    ? `<img src="${face.image_url}" alt="${escapeHtml(face.name || "")}" class="w-full max-w-xs rounded-lg border border-slate-700">`
+    : `<div class="w-full max-w-xs aspect-[5/7] rounded-lg border border-slate-700 bg-slate-900 flex items-center justify-center text-slate-600 text-sm">No image</div>`;
+
+  const pt = face.power != null && face.toughness != null
+    ? `<div class="text-sm text-slate-300 mb-2">${escapeHtml(face.power)}/${escapeHtml(face.toughness)}</div>`
+    : "";
+  const loyalty = face.loyalty != null
+    ? `<div class="text-sm text-slate-300 mb-2">Loyalty: ${escapeHtml(String(face.loyalty))}</div>`
+    : "";
+
+  return `
+    <div class="flex flex-col sm:flex-row gap-4">
+      ${img}
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline justify-between gap-2 flex-wrap">
+          <h2 class="text-xl font-bold">${escapeHtml(face.name || "")}</h2>
+          <span class="text-slate-400 text-sm">${escapeHtml(face.mana_cost || "")}</span>
+        </div>
+        <div class="text-slate-400 text-sm mb-2">${escapeHtml(face.type_line || "")}</div>
+        <p class="text-sm whitespace-pre-line mb-2">${escapeHtml(face.oracle_text || "")}</p>
+        ${pt}
+        ${loyalty}
+        ${face.flavor_text ? `<p class="text-xs italic text-slate-500">${escapeHtml(face.flavor_text)}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderCardDetail(card) {
+  const faces = card.faces
+    ? card.faces.map(renderCardFace).join(`<div class="my-4 border-t border-slate-800"></div>`)
+    : renderCardFace(card.primary);
+
+  const priceLine = (card.price_usd != null || card.price_usd_foil != null)
+    ? `
+      <div class="flex gap-4 text-sm mt-4">
+        ${card.price_usd != null ? `<div><span class="text-slate-500">USD:</span> $${Number(card.price_usd).toFixed(2)}</div>` : ""}
+        ${card.price_usd_foil != null ? `<div><span class="text-slate-500">Foil:</span> $${Number(card.price_usd_foil).toFixed(2)}</div>` : ""}
+      </div>
+    `
+    : `<div class="text-sm text-slate-500 mt-4">No pricing available.</div>`;
+
+  const legalities = Object.entries(card.legalities || {})
+    .map(([fmt, status]) => legalityBadge(fmt, status))
+    .join(" ");
+
+  const meta = `
+    <div class="text-xs text-slate-500 mt-4 space-y-1">
+      <div>${escapeHtml(card.set_name || "")} (${escapeHtml(card.set_code || "")}) #${escapeHtml(card.collector_number || "")} · ${escapeHtml(card.rarity || "")}</div>
+      ${card.artist ? `<div>Illustrated by ${escapeHtml(card.artist)}</div>` : ""}
+      ${card.scryfall_uri ? `<a href="${card.scryfall_uri}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">View on Scryfall →</a>` : ""}
+    </div>
+  `;
+
+  document.getElementById("card-detail-content").innerHTML = `
+    ${faces}
+    ${priceLine}
+    <div class="flex flex-wrap gap-2 mt-3">${legalities}</div>
+    ${meta}
+  `;
+}
+
+async function searchCard() {
+  const input = document.getElementById("card-search-input");
+  const msgEl = document.getElementById("card-search-msg");
+  const name = input.value.trim();
+
+  if (!name) {
+    msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
+    return;
+  }
+
+  const btn = document.getElementById("card-search-btn");
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Searching...";
+  msgEl.textContent = "";
+
+  try {
+    const res = await fetch(`${API_BASE}/card-lookup?name=${encodeURIComponent(name)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    renderCardDetail(data);
+    showCardView();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+document.getElementById("card-search-btn").addEventListener("click", searchCard);
+document.getElementById("card-search-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") searchCard();
+});
 
 showHomeView(); // Homepage is the default landing view
 
@@ -254,13 +413,120 @@ function renderCheckoutResults(lines, warnings, containerId = "checkout-results"
   });
 }
 
-async function runCheckoutAction(endpoint, btnEl) {
+async function loadCheckoutDeckSelect() {
+  try {
+    const res = await fetch(`${API_BASE}/decks`);
+    const data = await res.json();
+    const select = document.getElementById("checkout-deck-select");
+    const currentSelection = select.value;
+
+    select.innerHTML = `
+      <option value="">-- choose a deck --</option>
+      <option value="__new__">+ New Deck</option>
+    `;
+    data.decks.forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    });
+
+    if (data.decks.includes(currentSelection) || currentSelection === "__new__") {
+      select.value = currentSelection;
+    }
+  } catch (err) {
+    console.error("Failed to load checkout deck list:", err);
+  }
+}
+
+async function loadDeckIntoCheckoutBox(deckName) {
+  try {
+    const res = await fetch(`${API_BASE}/decks/${encodeURIComponent(deckName)}/cards`);
+    const data = await res.json();
+    const lines = data.cards
+      .slice()
+      .sort((a, b) => a.card_name.localeCompare(b.card_name))
+      .map((c) => `${c.quantity} ${c.card_name}`);
+    document.getElementById("checkout-input").value = lines.join("\n");
+  } catch (err) {
+    console.error("Failed to load deck contents into checkout box:", err);
+  }
+}
+
+function getEffectiveCheckoutDeckName() {
+  const select = document.getElementById("checkout-deck-select");
+  if (select.value === "__new__") {
+    return document.getElementById("checkout-new-deck-name").value.trim();
+  }
+  return select.value;
+}
+
+document.getElementById("checkout-deck-select").addEventListener("change", (e) => {
+  const value = e.target.value;
+  const newDeckInput = document.getElementById("checkout-new-deck-name");
+
+  if (value === "__new__") {
+    newDeckInput.classList.remove("hidden");
+    newDeckInput.value = "";
+    newDeckInput.focus();
+    document.getElementById("checkout-input").value = "";
+  } else {
+    newDeckInput.classList.add("hidden");
+    if (value) {
+      loadDeckIntoCheckoutBox(value);
+    } else {
+      document.getElementById("checkout-input").value = "";
+    }
+  }
+});
+
+function renderSyncResults(lines, warnings, errors) {
+  const container = document.getElementById("checkout-results");
+  container.innerHTML = "";
+
+  warnings.forEach((w) => {
+    const div = document.createElement("div");
+    div.className = "text-amber-400";
+    div.textContent = `⚠ ${w}`;
+    container.appendChild(div);
+  });
+
+  const statusColor = {
+    ok: "text-emerald-400",
+    unavailable: "text-rose-400",
+  };
+
+  const changed = lines.filter((line) => line.status !== "no_change");
+
+  changed.forEach((line) => {
+    const div = document.createElement("div");
+    div.className = statusColor[line.status] || "text-slate-300";
+    const deltaLabel = line.applied_delta > 0 ? `+${line.applied_delta}` : `${line.applied_delta}`;
+    div.textContent = line.message
+      ? `[${line.status}] ${line.card_name}: ${line.current_qty} → ${line.target_qty} (${deltaLabel}) — ${line.message}`
+      : `[${line.status}] ${line.card_name}: ${line.current_qty} → ${line.target_qty} (${deltaLabel})`;
+    container.appendChild(div);
+  });
+
+  if (lines.length > 0 && changed.length === 0) {
+    const div = document.createElement("div");
+    div.className = "text-slate-500";
+    div.textContent = "No changes — the deck already matches this list.";
+    container.appendChild(div);
+  }
+
+  if (errors.length > 0) {
+    alert(`Some cards couldn't be fully checked out:\n\n${errors.join("\n")}`);
+  }
+}
+
+async function runSyncAction(path, actionLabel, btnEl) {
   const decklist_text = document.getElementById("checkout-input").value;
-  const deck_name = document.getElementById("deck-name-input").value.trim();
+  const deck_name = getEffectiveCheckoutDeckName();
   const fuzzy_threshold = scaleToApiThreshold(clampScale(checkoutThresholdVal.value));
 
   if (!deck_name) {
-    alert("Please enter or select a deck name.");
+    alert("Choose a deck, or enter a name for a new one.");
     return;
   }
 
@@ -269,17 +535,22 @@ async function runCheckoutAction(endpoint, btnEl) {
   btnEl.textContent = "Working...";
 
   try {
-    const res = await fetch(`${API_BASE}/${endpoint}`, {
+    const res = await fetch(`${API_BASE}/${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decklist_text, deck_name, fuzzy_threshold }),
     });
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
     const data = await res.json();
-    renderCheckoutResults(data.lines, data.warnings);
-    loadDeckList(); // refresh dropdown in case a new deck name was created
+
+    renderSyncResults(data.lines, data.warnings, data.errors);
+
+    await loadCheckoutDeckSelect();
+    document.getElementById("checkout-deck-select").value = deck_name;
+    document.getElementById("checkout-new-deck-name").classList.add("hidden");
+    await loadDeckIntoCheckoutBox(deck_name);
   } catch (err) {
-    alert(`${endpoint} failed: ${err.message}`);
+    alert(`${actionLabel} failed: ${err.message}`);
   } finally {
     btnEl.disabled = false;
     btnEl.textContent = originalText;
@@ -287,10 +558,10 @@ async function runCheckoutAction(endpoint, btnEl) {
 }
 
 document.getElementById("checkout-btn").addEventListener("click", (e) => {
-  runCheckoutAction("checkout", e.target);
+  runSyncAction("checkout/sync", "Check Out", e.target);
 });
 document.getElementById("checkin-btn").addEventListener("click", (e) => {
-  runCheckoutAction("checkin", e.target);
+  runSyncAction("checkin/sync", "Check In", e.target);
 });
 
 // ---------- Tab 4 (cont'd): Bulk Update (CSV import) ----------

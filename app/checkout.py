@@ -210,6 +210,175 @@ def checkin_cards(
     return result
 
 
+@dataclass
+class SyncLineResult:
+    card_name: str
+    current_qty: int
+    target_qty: int
+    applied_delta: int  # positive = checked out, negative = checked in, 0 = no change
+    status: str  # "ok" | "unavailable" | "no_change"
+    message: str = ""
+
+
+@dataclass
+class SyncResult:
+    lines: list[SyncLineResult] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)  # unparseable / unmatched lines
+    errors: list[str] = field(default_factory=list)  # availability failures — surfaced as a popup
+
+
+def sync_checkout(
+    db: Session,
+    decklist_text: str,
+    deck_name: str,
+    fuzzy_threshold: int = DEFAULT_THRESHOLD,
+) -> SyncResult:
+    """
+    Deck Checkout tab's "sync" mode: the box is treated as each card's
+    target total in the deck, not an amount to add. For every card whose
+    target exceeds what's currently assigned, checks out the difference;
+    cards at or below their current amount are left untouched (use
+    sync_checkin to shrink). If a card doesn't have enough available
+    copies to reach its target, that one card is skipped entirely (not
+    partially fulfilled) and reported in `errors` for the caller to
+    surface as a popup — every other card in the same request still
+    applies normally.
+    """
+    parsed_lines = parse_decklist(decklist_text)
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).all()]
+
+    targets: dict[str, int] = {}
+    warnings: list[str] = []
+
+    for parsed in parsed_lines:
+        if not parsed.valid:
+            warnings.append(f"Could not parse line: '{parsed.raw_line}'")
+            continue
+
+        if is_basic_land(parsed.card_name):
+            canonical = canonical_basic_land_name(parsed.card_name)
+            targets[canonical] = targets.get(canonical, 0) + parsed.quantity
+            continue
+
+        matched_name = find_best_match(parsed.card_name, all_card_names, threshold=fuzzy_threshold)
+        if matched_name is None:
+            warnings.append(f"'{parsed.card_name}' not found in inventory — skipped.")
+            continue
+
+        targets[matched_name] = targets.get(matched_name, 0) + parsed.quantity
+
+    current_assignments = {
+        a.card_name: a.quantity
+        for a in db.query(DeckAssignment).filter(DeckAssignment.deck_name == deck_name).all()
+    }
+
+    lines: list[SyncLineResult] = []
+    errors: list[str] = []
+    any_change = False
+
+    for card_name, target_qty in targets.items():
+        current_qty = current_assignments.get(card_name, 0)
+        delta = target_qty - current_qty
+
+        if delta <= 0:
+            lines.append(SyncLineResult(card_name, current_qty, target_qty, 0, "no_change"))
+            continue
+
+        if is_basic_land(card_name):
+            _increment_assignment(db, card_name, deck_name, delta)
+            any_change = True
+            lines.append(SyncLineResult(card_name, current_qty, target_qty, delta, "ok"))
+            continue
+
+        available = _get_available_quantity(db, card_name, {})
+        if delta > available:
+            message = f"Only {available} available — reaching {target_qty} needs {delta} more."
+            errors.append(f"'{card_name}': {message}")
+            lines.append(SyncLineResult(card_name, current_qty, target_qty, 0, "unavailable", message))
+            continue
+
+        _increment_assignment(db, card_name, deck_name, delta)
+        any_change = True
+        lines.append(SyncLineResult(card_name, current_qty, target_qty, delta, "ok"))
+
+    if any_change:
+        _touch_deck(db, deck_name)
+    db.commit()
+    return SyncResult(lines=lines, warnings=warnings, errors=errors)
+
+
+def sync_checkin(
+    db: Session,
+    decklist_text: str,
+    deck_name: str,
+    fuzzy_threshold: int = DEFAULT_THRESHOLD,
+) -> SyncResult:
+    """
+    Deck Checkout tab's "sync" mode for Check In: the box is treated as
+    each card's target total in the deck. Any currently-assigned card
+    whose target is lower than its current amount (including cards
+    omitted from the box entirely, i.e. target 0) gets the difference
+    checked back in. Never adds cards — a target at or above the
+    current amount is a no-op here (use sync_checkout to grow).
+    """
+    parsed_lines = parse_decklist(decklist_text)
+
+    deck_card_names = [
+        row.card_name
+        for row in db.query(DeckAssignment.card_name)
+        .filter(DeckAssignment.deck_name == deck_name, DeckAssignment.quantity > 0)
+        .distinct()
+        .all()
+    ]
+
+    targets: dict[str, int] = {}
+    warnings: list[str] = []
+
+    for parsed in parsed_lines:
+        if not parsed.valid:
+            warnings.append(f"Could not parse line: '{parsed.raw_line}'")
+            continue
+
+        if is_basic_land(parsed.card_name):
+            canonical = canonical_basic_land_name(parsed.card_name)
+            targets[canonical] = targets.get(canonical, 0) + parsed.quantity
+            continue
+
+        matched_name = find_best_match(parsed.card_name, deck_card_names, threshold=fuzzy_threshold)
+        if matched_name is None:
+            warnings.append(f"'{parsed.card_name}' is not currently checked out to this deck — ignored.")
+            continue
+
+        targets[matched_name] = targets.get(matched_name, 0) + parsed.quantity
+
+    current_assignments = {
+        a.card_name: a.quantity
+        for a in db.query(DeckAssignment)
+        .filter(DeckAssignment.deck_name == deck_name, DeckAssignment.quantity > 0)
+        .all()
+    }
+
+    lines: list[SyncLineResult] = []
+    any_change = False
+
+    for card_name, current_qty in current_assignments.items():
+        target_qty = targets.get(card_name, 0)
+        delta = current_qty - target_qty  # positive = amount to check in
+
+        if delta <= 0:
+            lines.append(SyncLineResult(card_name, current_qty, target_qty, 0, "no_change"))
+            continue
+
+        _decrement_assignment(db, card_name, deck_name, delta)
+        any_change = True
+        lines.append(SyncLineResult(card_name, current_qty, target_qty, -delta, "ok"))
+
+    if any_change:
+        _touch_deck(db, deck_name)
+    db.commit()
+    return SyncResult(lines=lines, warnings=warnings, errors=[])
+
+
 def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
     """
     Returns every card currently checked out to `deck_name`, with

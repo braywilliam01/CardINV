@@ -13,7 +13,7 @@ logging.basicConfig(
 from .database import engine, Base, get_db
 from .models import DeckAssignment
 from .search import split_by_availability
-from .checkout import checkout_cards, checkin_cards, get_deck_cards
+from .checkout import checkout_cards, checkin_cards, sync_checkout, sync_checkin, get_deck_cards
 from .csv_import import bulk_load_inventory
 from .inventory_admin import (
     list_inventory,
@@ -27,6 +27,7 @@ from .inventory_admin import (
 )
 from .pricing import refresh_all_prices, refresh_single_price, get_collection_value, get_refresh_status, PricingError
 from .homepage import get_summary, get_deck_shortcuts, get_deck_meta, set_favorite
+from .card_lookup import lookup_card, record_card_view, get_recent_cards
 
 app = FastAPI(title="MTG Inventory Manager")
 
@@ -79,6 +80,32 @@ def checkin(req: CheckoutRequest, db: Session = Depends(get_db)):
     return _serialize(checkin_cards(db, req.decklist_text, req.deck_name, req.fuzzy_threshold))
 
 
+def _serialize_sync(result):
+    return {
+        "lines": [vars(l) for l in result.lines],
+        "warnings": result.warnings,
+        "errors": result.errors,
+    }
+
+
+@app.post("/api/checkout/sync")
+def checkout_sync(req: CheckoutRequest, db: Session = Depends(get_db)):
+    """
+    Deck Checkout tab's sync mode: the box holds each card's target
+    total (pre-loaded from the deck's current contents), not an amount
+    to add on top. Distinct from POST /api/checkout, which stays
+    additive for the Collection Search 'Add to Deck' action and Tab 5's
+    quick +1/-1 controls.
+    """
+    return _serialize_sync(sync_checkout(db, req.decklist_text, req.deck_name, req.fuzzy_threshold))
+
+
+@app.post("/api/checkin/sync")
+def checkin_sync(req: CheckoutRequest, db: Session = Depends(get_db)):
+    """Deck Checkout tab's sync mode for Check In — see checkout_sync."""
+    return _serialize_sync(sync_checkin(db, req.decklist_text, req.deck_name, req.fuzzy_threshold))
+
+
 @app.get("/api/decks")
 def list_decks(db: Session = Depends(get_db)):
     """Powers the deck-name dropdown in Tab 2 and Tab 5."""
@@ -121,6 +148,31 @@ def homepage_deck_shortcuts(db: Session = Depends(get_db)):
     """Up to 3 decks for the Homepage quick-access buttons — favorites
     first, then most-recently-modified decks filling remaining slots."""
     return {"decks": get_deck_shortcuts(db)}
+
+
+@app.get("/api/card-lookup")
+def card_lookup(name: str, db: Session = Depends(get_db)):
+    """Homepage's Card Search — fuzzy Scryfall lookup for one card's
+    full printed info (image, oracle text, prices, legalities). Doesn't
+    touch inventory/pricing tables (see /api/pricing/refresh-card for
+    that); the only local write is bumping the "Last Viewed" cache."""
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Enter a card name to search.")
+    try:
+        result = lookup_card(name.strip())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach Scryfall: {e}")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No Scryfall match found for '{name}'.")
+    record_card_view(db, result)
+    return result
+
+
+@app.get("/api/homepage/recent-cards")
+def homepage_recent_cards(db: Session = Depends(get_db)):
+    """Last few cards viewed via Card Search, for the Homepage's
+    'Last Viewed' tiles."""
+    return {"cards": get_recent_cards(db)}
 
 
 # ---------------------------------------------------------------------

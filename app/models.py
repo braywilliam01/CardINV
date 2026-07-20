@@ -60,3 +60,20 @@ class DeckMeta(Base):
     deck_name = Column(String, primary_key=True)
     is_favorite = Column(Boolean, nullable=False, default=False)
     last_modified = Column(DateTime, nullable=True)
+
+
+class CardSearchHistory(Base):
+    """
+    Cache of the most recently viewed Card Search results, powering the
+    Homepage's "Last Viewed" tiles. Not tied to Inventory — a searched
+    card doesn't have to be one you own. Trimmed to the most recent few
+    rows after every view (see card_lookup.record_card_view), so this
+    is a small rolling window, not a full search log.
+    """
+    __tablename__ = "card_search_history"
+
+    card_name = Column(String, primary_key=True)
+    image_url = Column(String, nullable=True)
+    mana_cost = Column(String, nullable=True)
+    type_line = Column(String, nullable=True)
+    viewed_at = Column(DateTime, nullable=False)

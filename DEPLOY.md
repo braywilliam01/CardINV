@@ -10,7 +10,12 @@ and keeps backups to a simple file copy.
 
 - Template: Debian 12 or Ubuntu 24.04
 - **Unprivileged** container — nothing here needs elevated host access
-- Resources: 1 vCPU, 512MB–1GB RAM, 4–8GB disk is plenty
+- Resources: 1 vCPU, **2GB RAM**, 4–8GB disk. The app itself is light at
+  rest, but a Magic price refresh downloads and parses Scryfall's
+  `default_cards` bulk file (every printing, 500MB+ gzipped and growing)
+  — parsing that into memory can spike well past 512MB-1GB. Don't
+  undersize this if you'll use "Refresh All Prices" or the weekly cron
+  job in step 9.
 - Proxmox UI → container → Options → **Start at boot** → Yes
 
 ## 2. Base packages
@@ -52,6 +57,15 @@ SESSION_HTTPS_ONLY=true
 # 20,000 requests/day. Free at https://dev.pokemontcg.io. Not required;
 # a full refresh (~82 paginated requests) fits comfortably without it.
 # POKEMONTCG_API_KEY=<your key>
+
+# Optional — relocates all SQLite data (default: ./data, i.e.
+# /opt/mtg-inventory/data). Useful for putting data on a separate
+# mounted volume.
+# DATA_DIR=/mnt/mtg-data
+# Optional — overrides just the shared accounts database's location/URL
+# (default: sqlite:///<DATA_DIR>/users.db). Rarely needed on its own —
+# DATA_DIR above already moves this along with everything else.
+# AUTH_DATABASE_URL=sqlite:////mnt/mtg-data/users.db
 ```
 
 `SESSION_HTTPS_ONLY=true` marks the session cookie HTTPS-only — correct once
@@ -67,6 +81,19 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Visit `http://<lxc-ip>:8000`, register an account, and confirm the app
 loads past login. Ctrl+C once confirmed.
+
+**Register your own account first.** The very first account ever created
+on a fresh install automatically becomes an admin (Settings → Manage
+Users lets an admin reset any other user's password) — nobody who
+registers afterward gets this automatically, and there's no way to
+promote an account to admin later without editing the database directly.
+
+**Registration is open to anyone who can reach the app** — there's no
+invite code, approval step, or login rate limiting. That's fine behind
+your own network or a tunnel/proxy you control, which covers the
+family/friends scale this is built for; if you're exposing it more
+broadly, put access control (e.g. a Cloudflare Access policy) in front
+of it.
 
 ## 6. Ownership
 
@@ -167,14 +194,16 @@ find /opt/mtg-inventory/backups -mtime +30 -delete
 chmod +x /etc/cron.daily/mtg-inventory-backup
 ```
 
-**Weekly price refresh (Scryfall):**
+**Weekly price refresh (Scryfall + pokemontcg.io):**
 
-Prices are cached per-user (each account has its own `card_prices` table
-inside its own database) and only update when refreshed — either manually
-from the "Refresh All Prices" button on the Manage Collection tab, or on a
-schedule via cron. Because `/api/pricing/refresh-bulk` now requires a
-logged-in session, an unauthenticated `curl` will just get a 401 — log in
-first and reuse the session cookie:
+Prices are cached per (user, game) — each user's Magic and Pokemon
+databases each have their own `card_prices` table — and only update when
+refreshed, either manually from the "Refresh All Prices" button on the
+Manage Collection tab, or on a schedule via cron. `/api/pricing/refresh-bulk`
+requires a logged-in session *and* only refreshes whichever game is
+active in that session (defaults to Magic, same as a brand-new login) —
+so refreshing both games means switching games between two refresh calls
+on the same cookie jar, not just calling it twice:
 
 ```bash
 # /etc/cron.weekly/mtg-inventory-price-refresh
@@ -187,7 +216,17 @@ COOKIE_JAR=$(mktemp)
 curl -s -c "$COOKIE_JAR" -X POST http://127.0.0.1:8000/api/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"username\": \"$USERNAME\", \"password\": \"$PASSWORD\"}" > /dev/null
+
+# Magic
+curl -s -b "$COOKIE_JAR" -X PUT http://127.0.0.1:8000/api/session/game \
+  -H "Content-Type: application/json" -d '{"game": "mtg"}' > /dev/null
 curl -s -b "$COOKIE_JAR" -X POST http://127.0.0.1:8000/api/pricing/refresh-bulk > /dev/null
+
+# Pokemon — drop this block if the account doesn't track Pokemon.
+curl -s -b "$COOKIE_JAR" -X PUT http://127.0.0.1:8000/api/session/game \
+  -H "Content-Type: application/json" -d '{"game": "pokemon"}' > /dev/null
+curl -s -b "$COOKIE_JAR" -X POST http://127.0.0.1:8000/api/pricing/refresh-bulk > /dev/null
+
 rm -f "$COOKIE_JAR"
 ```
 
@@ -195,17 +234,25 @@ rm -f "$COOKIE_JAR"
 chmod 700 /etc/cron.weekly/mtg-inventory-price-refresh   # contains a password
 ```
 
-For more than one account, either repeat the login-refresh pair per user in
-the same script, or give each user their own cron entry. This hits the
-app's own API rather than calling Scryfall directly from cron, so it reuses
-the same matching logic as the in-app button. It's a single bulk download
-from Scryfall regardless of collection size (Scryfall's oracle_cards file —
-one row per unique card — typically runs 100-150MB gzipped, so the full
-request usually takes anywhere from 15 seconds to a couple of minutes
-depending on the LXC's connection). That's expected and fine for an
-unattended weekly job. If you'd rather refresh more or less often, adjust
-by moving the script to `/etc/cron.daily/` or a custom crontab entry
-instead of `cron.weekly`.
+For more than one account, either repeat the whole block per user in the
+same script, or give each user their own cron entry. This hits the app's
+own API rather than calling the card data providers directly from cron,
+so it reuses the same matching logic as the in-app button.
+
+The Magic refresh is a single bulk download from Scryfall regardless of
+collection size, but it's larger than it looks: pricing is tracked per
+*printing*, not deduplicated by name, so the app downloads Scryfall's
+`default_cards` file — every printing of every card, currently **500MB+
+gzipped and growing**. Expect it to take anywhere from a minute to
+several minutes depending on the LXC's connection, and to briefly use
+well over 1GB of RAM while it's parsed (see the RAM note in step 1) —
+that memory spike is expected for this specific request, not a leak. The
+Pokemon refresh has no bulk-download equivalent — pokemontcg.io doesn't
+publish one — so it instead paginates the full catalog (~82 requests),
+which is slower per card but never spikes memory the way the Magic
+refresh does. Both are expected and fine for an unattended weekly job.
+If you'd rather refresh more or less often, adjust by moving the script
+to `/etc/cron.daily/` or a custom crontab entry instead of `cron.weekly`.
 
 **Checking refresh progress server-side:** while a refresh is running
 (triggered by cron, the "Refresh All Prices" button, or a manual curl),
@@ -215,16 +262,17 @@ you can watch it from either angle:
 # Live logs — shows each stage (fetching index, downloading, matching, committing)
 journalctl -u mtg-inventory -f
 
-# Or poll the status endpoint directly (needs a logged-in session, same as
-# the refresh call above — reuse a cookie jar from an authenticated login)
+# Or poll the status endpoint directly (needs a logged-in session with the
+# same game active as the refresh you're checking on — reuse a cookie jar
+# from an authenticated login, and set the game first if it's not Magic)
 curl -s -b "$COOKIE_JAR" http://127.0.0.1:8000/api/pricing/status | python3 -m json.tool
 ```
 
 The status endpoint reports `in_progress`, the current `stage`, a
 `cards_processed` / `total_cards_in_file` counter while matching is
-underway, and the result (or error) of the most recent run — useful
-for confirming the weekly cron job actually completed without having
-to dig through logs.
+underway, and the result (or error) of the most recent run — for
+*whichever game is active in that session*. Useful for confirming the
+weekly cron job actually completed without having to dig through logs.
 
 **Container-level (whole-LXC disaster recovery):**
 
@@ -237,10 +285,12 @@ restoring an individual day's DB without touching the whole container.
 - [ ] `systemctl status mtg-inventory` shows active
 - [ ] App loads via the reverse-proxy URL, not just `127.0.0.1:8000`
 - [ ] `SESSION_SECRET_KEY` is set — no warning about the insecure default in `journalctl -u mtg-inventory`
+- [ ] The account you registered first is the admin (Settings → Manage Users shows a user list)
 - [ ] Registering a new account works, and its data is isolated from any other account (`data/users/<name>/<mtg|pokemon>/inventory.db` is a separate file per user per game)
 - [ ] Logging out and back in preserves that account's data
 - [ ] `/healthz` returns `{"status": "ok"}` without needing a session
 - [ ] The drawer's Magic/Pokemon/Everything switcher works, and each game's data stays isolated from the other's
-- [ ] All three tabs functional (search, decks, bulk upload) once logged in
+- [ ] Homepage, Manage Collection (including Bulk Update), Decks, Collection Search, Card Search, and Settings all load once logged in
 - [ ] Cron backup script is executable and cron.daily picks it up
+- [ ] Weekly price-refresh cron script is executable, and covers Pokemon too if the account tracks it
 - [ ] LXC "Start at boot" is enabled in Proxmox UI

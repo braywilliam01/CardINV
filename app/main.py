@@ -412,7 +412,12 @@ def card_lookup(name: str, db: Session = Depends(get_db), game: str = Depends(ge
     except PokemonRateLimitError as e:
         raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
+        # 424 (not 502) deliberately -- Cloudflare (and similar CDNs)
+        # intercept 502/503/504 from the origin as "site is down" and
+        # substitute their own branded error page, silently swallowing
+        # this response's actual JSON body. 424 Failed Dependency isn't
+        # in that reserved family, so it reaches the client untouched.
+        raise HTTPException(status_code=424, detail=f"Failed to reach {provider_name}: {e}")
     if result is None:
         raise HTTPException(status_code=404, detail=f"No {provider_name} match found for '{name}'.")
     record_card_view(db, result)
@@ -735,9 +740,12 @@ def pricing_refresh_bulk(db: Session = Depends(get_db), game: str = Depends(get_
     try:
         result = refresh_all_prices(db) if game == "mtg" else pokemon_refresh_all_prices(db)
     except PricingError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        # 424, not 502 -- see the comment on /api/card-lookup's equivalent
+        # branch for why: Cloudflare intercepts 502/503/504 from the
+        # origin and swaps in its own error page.
+        raise HTTPException(status_code=424, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
+        raise HTTPException(status_code=424, detail=f"Failed to reach {provider_name}: {e}")
     return result
 
 
@@ -763,7 +771,7 @@ def pricing_refresh_card(
             else pokemon_refresh_single_price(db, card_name, set_code, collector_number)
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
+        raise HTTPException(status_code=424, detail=f"Failed to reach {provider_name}: {e}")
 
     if result is None:
         raise HTTPException(status_code=404, detail=f"No {provider_name} match found for '{card_name}'.")

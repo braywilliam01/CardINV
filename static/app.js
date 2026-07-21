@@ -485,12 +485,15 @@ async function searchCard() {
   try {
     const res = await fetch(`${API_BASE}/card-lookup?name=${encodeURIComponent(name)}`);
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+    if (!res.ok) {
+      const detail = typeof data.detail === "string" ? data.detail : `Server error: ${res.status}`;
+      throw new Error(detail);
+    }
 
     renderCardDetail(data);
     showCardView();
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;

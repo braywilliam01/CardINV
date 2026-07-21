@@ -21,8 +21,10 @@ RECENT_CARDS_LIMIT = 3
 # and a collector number. The number MUST start with a digit — without
 # that, a plain two-word card name with no comma (e.g. "Sol Ring") would
 # itself match "SET NUMBER" (SOL + Ring) and get misparsed as a printing
-# reference instead of searched by name.
-_PRINTING_QUERY = re.compile(r"^([A-Za-z0-9]{2,5})\s+(\d+\S*)$")
+# reference instead of searched by name. An optional leading "#" is
+# tolerated on the number, since the UI's own help text shows the format
+# as "SET #" and users understandably type that "#" literally.
+_PRINTING_QUERY = re.compile(r"^([A-Za-z0-9]{2,5})\s+#?(\d+\S*)$")
 
 
 def _parse_search_query(query: str) -> tuple[str, str, str]:

@@ -1,7 +1,14 @@
 import httpx
 
 from .fuzzy import find_best_match, DEFAULT_THRESHOLD
-from .pokemon_common import POKEMON_API_BASE, HEADERS, extract_usd_prices, extract_eur_price
+from .pokemon_common import (
+    POKEMON_API_BASE,
+    HEADERS,
+    REQUEST_TIMEOUT,
+    PokemonRateLimitError,
+    extract_usd_prices,
+    extract_eur_price,
+)
 
 # Curated subset of the formats pokemontcg.io tracks legality for.
 DISPLAY_FORMATS = ["standard", "expanded", "unlimited"]
@@ -18,8 +25,13 @@ def _search_cards(client: httpx.Client, query: str) -> list[dict]:
         f"{POKEMON_API_BASE}/cards",
         params={"q": query, "pageSize": 50},
         headers=HEADERS,
-        timeout=15,
+        timeout=REQUEST_TIMEOUT,
     )
+    if resp.status_code == 429:
+        raise PokemonRateLimitError(
+            "pokemontcg.io's request limit was reached. Set POKEMONTCG_API_KEY "
+            "(see DEPLOY.md) for a much higher limit."
+        )
     resp.raise_for_status()
     return resp.json().get("data", [])
 

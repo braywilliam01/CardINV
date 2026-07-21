@@ -1,6 +1,25 @@
 import os
 
+import httpx
+
 POKEMON_API_BASE = "https://api.pokemontcg.io/v2"
+
+# A single Card Search lookup can make up to two sequential requests
+# (exact match, then a wildcard fallback) — keeping each request's
+# worst case well under 10s keeps the whole endpoint responsive even
+# when pokemontcg.io itself is slow, instead of tying up a request
+# thread for up to a minute.
+REQUEST_TIMEOUT = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
+
+
+class PokemonRateLimitError(Exception):
+    """
+    Raised when pokemontcg.io responds 429 — the keyless tier allows
+    only 30 requests/min (1,000/day), which normal Card Search usage
+    can exhaust. Kept distinct from a generic failure so callers can
+    surface a clear, fast "try again shortly" message instead of a
+    vague "failed to reach" one.
+    """
 
 HEADERS = {
     "User-Agent": "MTG-Inventory-Manager/1.0 (personal collection tool)",

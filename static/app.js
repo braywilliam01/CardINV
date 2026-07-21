@@ -484,7 +484,15 @@ async function searchCard() {
 
   try {
     const res = await fetch(`${API_BASE}/card-lookup?name=${encodeURIComponent(name)}`);
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      // A non-JSON body means something other than our app answered —
+      // e.g. the reverse proxy's own error page after a slow/unreachable
+      // upstream lookup — rather than an app-level error we can explain.
+      throw new Error(`Server error (${res.status}). The server may be temporarily unreachable — try again in a moment.`);
+    }
     if (!res.ok) {
       const detail = typeof data.detail === "string" ? data.detail : `Server error: ${res.status}`;
       throw new Error(detail);

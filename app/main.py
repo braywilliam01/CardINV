@@ -58,6 +58,7 @@ from .homepage import get_summary, get_deck_shortcuts, get_deck_meta, set_favori
 from .deck_admin import rename_deck, delete_deck, DeckNotFoundError, DuplicateDeckError
 from .card_lookup import lookup_card, record_card_view, get_recent_cards
 from .pokemon_lookup import lookup_card as pokemon_lookup_card
+from .pokemon_common import PokemonRateLimitError
 from .sets_cache import search_sets
 
 app = FastAPI(title="MTG Inventory Manager")
@@ -408,6 +409,8 @@ def card_lookup(name: str, db: Session = Depends(get_db), game: str = Depends(ge
     provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
     try:
         result = lookup_card(name.strip()) if game == "mtg" else pokemon_lookup_card(name.strip())
+    except PokemonRateLimitError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to reach {provider_name}: {e}")
     if result is None:

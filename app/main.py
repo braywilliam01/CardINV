@@ -71,7 +71,16 @@ from .pokemon_lookup import lookup_card as pokemon_lookup_card
 from .pokemon_common import PokemonRateLimitError
 from .sets_cache import search_sets
 
-app = FastAPI(title="MTG Inventory Manager")
+app = FastAPI(
+    title="MTG Inventory Manager",
+    # A personal app has no reason to publish a live, unauthenticated
+    # map of its entire API on the internet — openapi_url has to go
+    # too, not just the docs_url/redoc_url UI wrappers, since the raw
+    # schema JSON exposes the same information either way.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "dev-insecure-change-me-in-production")
 if SESSION_SECRET_KEY == "dev-insecure-change-me-in-production":

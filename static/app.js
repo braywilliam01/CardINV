@@ -97,7 +97,16 @@ document.querySelectorAll(".game-switch-btn").forEach((btn) => {
 const ALL_VIEW_IDS = ["view-auth", "view-home", "view-app", "view-card", "view-everything", "view-settings"];
 
 function hideAllViews() {
+  const leavingHome = !document.getElementById("view-home").classList.contains("hidden");
   ALL_VIEW_IDS.forEach((id) => document.getElementById(id).classList.add("hidden"));
+  if (leavingHome) {
+    // Card Search's input lives on the homepage and otherwise keeps
+    // whatever was typed forever — including across a shared browser
+    // being handed off to a different logged-in user without a full
+    // page reload (e.g. switching tabs, not logging out).
+    document.getElementById("card-search-input").value = "";
+    document.getElementById("card-search-msg").textContent = "";
+  }
 }
 
 function showHomeView() {

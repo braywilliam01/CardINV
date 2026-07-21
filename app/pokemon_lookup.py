@@ -6,8 +6,7 @@ from .pokemon_common import (
     HEADERS,
     REQUEST_TIMEOUT,
     PokemonRateLimitError,
-    extract_usd_prices,
-    extract_eur_price,
+    extract_all_usd_prices,
 )
 
 # Curated subset of the formats pokemontcg.io tracks legality for.
@@ -126,7 +125,6 @@ def _normalize(card: dict) -> dict:
     subtypes = card.get("subtypes") or []
     type_line = f"{supertype} — {', '.join(subtypes)}" if subtypes else supertype
 
-    price_usd, price_usd_foil = extract_usd_prices(card)
     legalities = card.get("legalities", {}) or {}
 
     return {
@@ -158,9 +156,7 @@ def _normalize(card: dict) -> dict:
         "collector_number": card.get("number"),
         "rarity": card.get("rarity"),
         "artist": card.get("artist"),
-        "price_usd": price_usd,
-        "price_usd_foil": price_usd_foil,
-        "price_eur": extract_eur_price(card),
+        "prices": extract_all_usd_prices(card),
         "legalities": {fmt: legalities.get(fmt, "not_legal") for fmt in DISPLAY_FORMATS},
         "external_url": (card.get("tcgplayer") or {}).get("url"),
         "external_url_label": "View on TCGPlayer",

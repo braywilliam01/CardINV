@@ -62,7 +62,30 @@ def extract_usd_prices(card: dict) -> tuple[float | None, float | None]:
     return price_usd, price_usd_foil
 
 
-def extract_eur_price(card: dict) -> float | None:
-    cardmarket = card.get("cardmarket") or {}
-    prices = cardmarket.get("prices") or {}
-    return prices.get("averageSellPrice") or prices.get("trendPrice")
+# Display order/labels for Card Search's popup, which — unlike the
+# inventory DB (a single price_usd/price_usd_foil pair per printing,
+# see extract_usd_prices above) — shows every distinct USD variant a
+# printing actually has, since Holofoil and Reverse Holofoil are
+# genuinely different market prices, not interchangeable "foil".
+_USD_PRICE_VARIANTS = [
+    ("normal", "Normal"),
+    ("holofoil", "Holofoil"),
+    ("reverseHolofoil", "Reverse Holofoil"),
+    ("1stEditionNormal", "1st Edition"),
+    ("1stEditionHolofoil", "1st Edition Holofoil"),
+    ("unlimited", "Unlimited"),
+    ("1stEditionUnlimited", "1st Edition Unlimited"),
+]
+
+
+def extract_all_usd_prices(card: dict) -> list[dict]:
+    tcgplayer = card.get("tcgplayer") or {}
+    prices = tcgplayer.get("prices") or {}
+
+    result = []
+    for key, label in _USD_PRICE_VARIANTS:
+        variant = prices.get(key)
+        market = variant.get("market") if variant else None
+        if market is not None:
+            result.append({"label": label, "value": market})
+    return result

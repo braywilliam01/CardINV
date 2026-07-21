@@ -168,8 +168,19 @@ def _normalize_card(card: dict) -> dict:
             if not primary.get("flavor_text"):
                 primary["flavor_text"] = raw_faces[0].get("flavor_text")
 
-    prices = card.get("prices", {}) or {}
+    raw_prices = card.get("prices", {}) or {}
     legalities = card.get("legalities", {}) or {}
+
+    # Card Search's price display shows every distinct USD variant a
+    # printing has (e.g. a Pokemon card's Holofoil/Reverse Holofoil are
+    # genuinely different market prices) — Scryfall only ever has these
+    # two for MTG, but the frontend renders whatever's in this list
+    # generically, same as Pokemon's normalize() below.
+    prices = []
+    if raw_prices.get("usd") is not None:
+        prices.append({"label": "USD", "value": float(raw_prices["usd"])})
+    if raw_prices.get("usd_foil") is not None:
+        prices.append({"label": "Foil", "value": float(raw_prices["usd_foil"])})
 
     # Inventory (and ManaBox exports) track a double-faced or split/
     # adventure card under its front face's name alone, never Scryfall's
@@ -189,8 +200,7 @@ def _normalize_card(card: dict) -> dict:
         "collector_number": card.get("collector_number"),
         "rarity": card.get("rarity"),
         "artist": card.get("artist"),
-        "price_usd": prices.get("usd"),
-        "price_usd_foil": prices.get("usd_foil"),
+        "prices": prices,
         "legalities": {fmt: legalities.get(fmt, "not_legal") for fmt in DISPLAY_FORMATS},
         "external_url": card.get("scryfall_uri"),
         "external_url_label": "View on Scryfall",

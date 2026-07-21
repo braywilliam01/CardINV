@@ -305,29 +305,24 @@ function renderCardFace(face) {
 // especially on mobile, where the primary price is the first thing on
 // screen after the card name.
 function renderPriceHero(card) {
-  // Not every printing has a USD price (e.g. some Pokemon promos only
-  // carry a Cardmarket/EUR price) — pick whichever price actually
-  // exists as the big primary figure instead of hard-coding USD, so
-  // the hero never shows "No pricing available" right next to a
-  // contradicting secondary price.
-  const candidates = [];
-  if (card.price_usd != null) candidates.push({ label: "USD", symbol: "$", value: card.price_usd });
-  if (card.price_usd_foil != null) candidates.push({ label: "Foil", symbol: "$", value: card.price_usd_foil });
-  if (card.price_eur != null) candidates.push({ label: "EUR", symbol: "€", value: card.price_eur });
-
+  // USD only, every variant the printing actually has (MTG: USD/Foil;
+  // Pokemon: Normal/Holofoil/Reverse Holofoil/etc. are genuinely
+  // different market prices, not interchangeable "foil") — see
+  // card_lookup.py/pokemon_lookup.py's shared `prices` list shape.
+  const candidates = card.prices || [];
   const [primary, ...secondary] = candidates;
 
   const priceDisplay = primary
     ? `
       <div class="flex items-baseline gap-2 justify-center sm:justify-start">
-        <span class="text-6xl sm:text-7xl font-black text-emerald-400 leading-none tracking-tight">${primary.symbol}${Number(primary.value).toFixed(2)}</span>
-        <span class="text-sm text-slate-500 uppercase tracking-wide">${primary.label}</span>
+        <span class="text-6xl sm:text-7xl font-black text-emerald-400 leading-none tracking-tight">$${Number(primary.value).toFixed(2)}</span>
+        <span class="text-sm text-slate-500 uppercase tracking-wide">${escapeHtml(primary.label)}</span>
       </div>
     `
     : `<div class="text-xl font-semibold text-slate-500 text-center sm:text-left">No pricing available</div>`;
 
   const secondaryHtml = secondary
-    .map((s) => `<span><span class="text-slate-500">${s.label}</span> ${s.symbol}${Number(s.value).toFixed(2)}</span>`)
+    .map((s) => `<span><span class="text-slate-500">${escapeHtml(s.label)}</span> $${Number(s.value).toFixed(2)}</span>`)
     .join("");
 
   return `

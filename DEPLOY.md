@@ -105,11 +105,14 @@ registers afterward gets this automatically, and there's no way to
 promote an account to admin later without editing the database directly.
 
 **Registration is open to anyone who can reach the app** — there's no
-invite code, approval step, or login rate limiting. That's fine behind
-your own network or a tunnel/proxy you control, which covers the
-family/friends scale this is built for; if you're exposing it more
-broadly, put access control (e.g. a Cloudflare Access policy) in front
-of it.
+invite code or approval step. Login and registration are both rate
+limited per IP (10 login attempts/5 min, 5 registrations/hour — see
+app/rate_limit.py) as a basic guard against automated abuse, but
+that's a lightweight in-process limiter, not a hardened defense. Open
+registration is fine behind your own network or a tunnel/proxy you
+control, which covers the family/friends scale this is built for; if
+you're exposing it more broadly, put access control (e.g. a Cloudflare
+Access policy) in front of it.
 
 ## 6. Ownership
 

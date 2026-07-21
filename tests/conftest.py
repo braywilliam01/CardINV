@@ -32,13 +32,35 @@ def _cleanup_test_data_dir():
     shutil.rmtree(_TEST_DATA_DIR, ignore_errors=True)
 
 
+def _new_client() -> TestClient:
+    """
+    A fresh TestClient with its own synthetic X-Real-IP — every
+    request from a Starlette TestClient reports the same
+    request.client.host ("testclient"), which would collapse every
+    test into one shared bucket for main.py's login/register rate
+    limiters (see rate_limit.py, which reads X-Real-IP the same way
+    it would behind the real nginx deployment). A unique IP per
+    client keeps each test isolated, the same way each represents a
+    different real-world visitor.
+    """
+    c = TestClient(app)
+    # Doesn't need to look like a real IP -- rate_limit.get_client_ip
+    # treats the header as an opaque key, and a full UUID keeps this
+    # collision-free across an entire test run (a small numeric range,
+    # e.g. "203.0.113.N" for small N, collides constantly at this
+    # volume of client instances — verified empirically while writing
+    # this suite).
+    c.headers.update({"X-Real-IP": f"test-client-{uuid.uuid4().hex}"})
+    return c
+
+
 @pytest.fixture
 def client():
     """A fresh, unauthenticated TestClient. Cookies persist for this
     client's lifetime (same as `requests.Session()`), so a test that
     registers/logs in with this client stays logged in across
     subsequent calls on the same instance."""
-    return TestClient(app)
+    return _new_client()
 
 
 @pytest.fixture
@@ -79,7 +101,7 @@ def _bootstrap_admin(_cleanup_test_data_dir):
     autouse; depending on _cleanup_test_data_dir (not using it
     directly) just pins this to run after DATA_DIR exists.
     """
-    TestClient(app).post(
+    _new_client().post(
         "/api/auth/register", json={"username": _ADMIN_USERNAME, "password": _ADMIN_PASSWORD}
     )
 
@@ -87,7 +109,7 @@ def _bootstrap_admin(_cleanup_test_data_dir):
 @pytest.fixture
 def admin_client():
     """A fresh, logged-in TestClient for the bootstrapped admin account."""
-    c = TestClient(app)
+    c = _new_client()
     res = c.post("/api/auth/login", json={"username": _ADMIN_USERNAME, "password": _ADMIN_PASSWORD})
     assert res.status_code == 200, res.text
     return c

@@ -29,6 +29,7 @@ from .auth import (
     list_users,
 )
 from .auth_models import User
+from .rate_limit import RateLimiter, get_client_ip
 from .models import DeckAssignment, Inventory
 from .search import split_by_availability
 from .checkout import checkout_cards, checkin_cards, sync_checkout, sync_checkin, get_deck_cards
@@ -85,6 +86,13 @@ if not os.environ.get("POKEMONTCG_API_KEY"):
         "30 requests/min (1,000/day) and more likely to hit pokemontcg.io's own rate "
         "limiting or intermittent errors. Free at https://dev.pokemontcg.io (see DEPLOY.md)."
     )
+
+# Basic guard against automated login/registration abuse — see
+# rate_limit.py. Login gets a moderate window (room for genuine typos,
+# still blocks automated guessing); registration is stricter since a
+# real user essentially never registers more than a couple of times.
+_login_rate_limiter = RateLimiter(max_requests=10, window_seconds=300)
+_register_rate_limiter = RateLimiter(max_requests=5, window_seconds=3600)
 
 app.add_middleware(
     SessionMiddleware,
@@ -146,6 +154,7 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/auth/register")
 def auth_register(req: RegisterRequest, request: Request, auth_db: Session = Depends(get_auth_db)):
+    _register_rate_limiter.check(get_client_ip(request))
     try:
         user = register_user(auth_db, req.username, req.password)
     except ValueError as e:
@@ -156,6 +165,7 @@ def auth_register(req: RegisterRequest, request: Request, auth_db: Session = Dep
 
 @app.post("/api/auth/login")
 def auth_login(req: LoginRequest, request: Request, auth_db: Session = Depends(get_auth_db)):
+    _login_rate_limiter.check(get_client_ip(request))
     user = authenticate_user(auth_db, req.username, req.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid username or password.")

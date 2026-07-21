@@ -9,6 +9,15 @@ from .database import get_user_engine, get_auth_db, is_valid_username, GAMES, DE
 
 MIN_PASSWORD_LENGTH = 8
 
+# A precomputed hash checked against when a login's username doesn't
+# exist at all, so authenticate_user always pays bcrypt's (deliberately
+# slow) cost once, regardless of whether the account is real. Without
+# this, a "no such user" response returns measurably faster than a
+# "wrong password" one, leaking which usernames are registered via
+# simple response-timing measurement. Computed once at import time,
+# not per-request — gensalt() itself isn't free either.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"not-a-real-account-timing-decoy", bcrypt.gensalt()).decode()
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -57,7 +66,12 @@ def register_user(db: Session, username: str, password: str) -> User:
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = db.query(User).filter(User.username == username.strip()).one_or_none()
-    if user is None or not verify_password(password, user.password_hash):
+    # Always check against *some* hash — a real one if the account
+    # exists, the fixed decoy if it doesn't — so this function takes
+    # the same time either way (see _DUMMY_PASSWORD_HASH above).
+    password_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    password_ok = verify_password(password, password_hash)
+    if user is None or not password_ok:
         return None
     return user
 

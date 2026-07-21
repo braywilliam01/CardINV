@@ -70,6 +70,13 @@ if SESSION_SECRET_KEY == "dev-insecure-change-me-in-production":
         "Set it to a random value before deploying anywhere real (see DEPLOY.md)."
     )
 
+if not os.environ.get("POKEMONTCG_API_KEY"):
+    logger.warning(
+        "POKEMONTCG_API_KEY is not set — Pokemon Card Search/pricing is limited to "
+        "30 requests/min (1,000/day) and more likely to hit pokemontcg.io's own rate "
+        "limiting or intermittent errors. Free at https://dev.pokemontcg.io (see DEPLOY.md)."
+    )
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET_KEY,

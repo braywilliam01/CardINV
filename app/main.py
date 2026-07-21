@@ -1,7 +1,9 @@
+import hashlib
 import logging
 import os
 
 from fastapi import FastAPI, Depends, Request, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -48,7 +50,14 @@ from .inventory_admin import (
     DuplicateCardError,
     build_group_row,
 )
-from .pricing import refresh_all_prices, refresh_single_price, get_collection_value, get_refresh_status, PricingError
+from .pricing import (
+    refresh_all_prices,
+    refresh_single_price,
+    get_collection_value,
+    get_refresh_status,
+    store_known_price,
+    PricingError,
+)
 from .pokemon_pricing import (
     refresh_all_prices as pokemon_refresh_all_prices,
     refresh_single_price as pokemon_refresh_single_price,
@@ -438,6 +447,8 @@ class QuickAddRequest(BaseModel):
     card_name: str
     set_code: str = ""
     collector_number: str = ""
+    price_usd: float | None = None
+    price_usd_foil: float | None = None
 
 
 @app.post("/api/inventory/quick-add")
@@ -445,8 +456,18 @@ def inventory_quick_add(req: QuickAddRequest, db: Session = Depends(get_db)):
     """Card Search's 'Add to Inventory' button — adds exactly one copy
     of the exact printing shown (falling back to the unresolved bucket
     if no set/number is given), incrementing an existing (fuzzy-matched
-    on name) row or creating a new one."""
+    on name) row or creating a new one. Card Search already fetched
+    this printing's price, so if given, that's stored immediately
+    rather than leaving the printing unpriced until a separate
+    refresh."""
     row = add_one_copy(db, req.card_name, req.set_code, req.collector_number)
+    if req.price_usd is not None or req.price_usd_foil is not None:
+        # row.card_name (not req.card_name) -- add_one_copy fuzzy-matches
+        # onto an existing inventory name when one's close enough, and
+        # the price row has to be keyed the same way or it won't line up
+        # with the printing it's meant to price.
+        store_known_price(db, row.card_name, req.set_code, req.collector_number, req.price_usd, req.price_usd_foil)
+        row = build_group_row(db, row.card_name)
     return _row_to_dict(row)
 
 
@@ -802,9 +823,43 @@ def pricing_summary(db: Session = Depends(get_db)):
     return get_collection_value(db)
 
 
+def _static_asset_version() -> str:
+    """
+    A short hash of app.js + app.css's actual bytes, computed once at
+    startup. Browsers (and Cloudflare) cache these aggressively via a
+    long max-age — without a version query string tied to content, a
+    deploy that changes either file is invisible to anyone with a warm
+    cache until it expires on its own, which has already caused a
+    real "backend and frontend disagree on the response shape" bug.
+    Appending "?v=<hash>" makes each deploy's assets a distinct,
+    freshly-fetched URL while still letting unchanged files stay
+    cached indefinitely.
+    """
+    hasher = hashlib.md5()
+    for filename in ("app.js", "app.css"):
+        with open(os.path.join("static", filename), "rb") as f:
+            hasher.update(f.read())
+    return hasher.hexdigest()[:10]
+
+
+STATIC_ASSET_VERSION = _static_asset_version()
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    with open(os.path.join("static", "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    html = html.replace('href="app.css"', f'href="app.css?v={STATIC_ASSET_VERSION}"')
+    html = html.replace('src="app.js"', f'src="app.js?v={STATIC_ASSET_VERSION}"')
+    return html
+
+
 # ---------------------------------------------------------------------
 # Static frontend — MUST be mounted last. StaticFiles mounted at "/"
 # will shadow any /api/... routes registered after it, so this stays
-# at the bottom of the file regardless of edit order.
+# at the bottom of the file regardless of edit order. The explicit
+# GET "/" route above (registered earlier) takes priority over this
+# mount for the root path specifically, so index.html is always
+# served through it rather than as a raw static file.
 # ---------------------------------------------------------------------
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

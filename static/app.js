@@ -413,11 +413,13 @@ function renderPokemonCardBody(card) {
 let currentCardInventoryName = null;
 let currentCardSetCode = "";
 let currentCardCollectorNumber = "";
+let currentCardPrices = [];
 
 function renderCardDetail(card) {
   currentCardInventoryName = card.inventory_name;
   currentCardSetCode = card.set_code || "";
   currentCardCollectorNumber = card.collector_number || "";
+  currentCardPrices = card.prices || [];
 
   const body = currentGame === "pokemon" ? renderPokemonCardBody(card) : renderMtgCardBody(card);
   const legalities = Object.entries(card.legalities || {})
@@ -444,6 +446,11 @@ async function addCurrentCardToInventory() {
   btn.textContent = "Adding...";
 
   try {
+    // Card Search already fetched this printing's price — send it along
+    // so it's stored immediately instead of showing unpriced until a
+    // separate refresh. Same primary/secondary slots renderPriceHero
+    // displays: first entry is price_usd, second (if any) price_usd_foil.
+    const [primary, secondary] = currentCardPrices;
     const res = await fetch(`${API_BASE}/inventory/quick-add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -451,6 +458,8 @@ async function addCurrentCardToInventory() {
         card_name: currentCardInventoryName,
         set_code: currentCardSetCode,
         collector_number: currentCardCollectorNumber,
+        price_usd: primary ? primary.value : null,
+        price_usd_foil: secondary ? secondary.value : null,
       }),
     });
     const data = await res.json();

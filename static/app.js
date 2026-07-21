@@ -1,3 +1,12 @@
+// This is the SOURCE file — index.html actually serves app.min.js
+// (see app/main.py's index() route). After editing this file,
+// regenerate it:
+//   python3 -c "import rjsmin; open('static/app.min.js','w').write(rjsmin.jsmin(open('static/app.js').read()))"
+// (pip install rjsmin if it's not already in the venv — it's a
+// build-time tool, not a runtime app dependency, so it's not in
+// requirements.txt.) Same idea as static/app.css being generated from
+// tailwind-input.css via the Tailwind CLI — don't edit app.min.js
+// directly, it'll just be overwritten next rebuild.
 const API_BASE = "/api";
 const DEFAULT_APP_TAB = "manage";
 const GAME_LABELS = { mtg: "Magic: The Gathering", pokemon: "Pokémon" };

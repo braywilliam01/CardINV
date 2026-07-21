@@ -110,6 +110,38 @@ app.add_middleware(
     https_only=os.environ.get("SESSION_HTTPS_ONLY", "false").lower() == "true",
 )
 
+# Cloudflare already adds X-Frame-Options, X-Content-Type-Options, and
+# Referrer-Policy at the edge (verified against the live deployment) —
+# these two are genuinely app-specific instead, so Cloudflare can't
+# set meaningful values for them on its own. CSP allows only this
+# app's own same-origin script/style/API calls plus the two card-art
+# CDNs it actually loads images from; Permissions-Policy turns off
+# browser features this app never uses. (Not adding
+# Strict-Transport-Security here — that's better left to Cloudflare's
+# own HSTS setting, since the app supports both HTTP and HTTPS access
+# depending on SESSION_HTTPS_ONLY, and unconditionally sending HSTS
+# from the app could break direct/local HTTP access.)
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' https://cards.scryfall.io https://images.pokemontcg.io; "
+    "connect-src 'self'; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+_PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = _CSP
+    response.headers["Permissions-Policy"] = _PERMISSIONS_POLICY
+    return response
+
 AuthBase.metadata.create_all(bind=auth_engine)
 
 
@@ -854,18 +886,23 @@ def pricing_summary(db: Session = Depends(get_db)):
 
 def _static_asset_version() -> str:
     """
-    A short hash of app.js + app.css's actual bytes, computed once at
-    startup. Browsers (and Cloudflare) cache these aggressively via a
-    long max-age — without a version query string tied to content, a
+    A short hash of app.min.js + app.css's actual bytes, computed once
+    at startup. Browsers (and Cloudflare) cache these aggressively via
+    a long max-age — without a version query string tied to content, a
     deploy that changes either file is invisible to anyone with a warm
     cache until it expires on its own, which has already caused a
     real "backend and frontend disagree on the response shape" bug.
     Appending "?v=<hash>" makes each deploy's assets a distinct,
     freshly-fetched URL while still letting unchanged files stay
     cached indefinitely.
+
+    Hashes app.min.js (what's actually served — see static/app.js's
+    top-of-file comment on regenerating it) rather than app.js itself,
+    so the version always reflects the real served bytes even if
+    app.min.js is ever out of sync with its source.
     """
     hasher = hashlib.md5()
-    for filename in ("app.js", "app.css"):
+    for filename in ("app.min.js", "app.css"):
         with open(os.path.join("static", filename), "rb") as f:
             hasher.update(f.read())
     return hasher.hexdigest()[:10]
@@ -879,7 +916,7 @@ def index():
     with open(os.path.join("static", "index.html"), encoding="utf-8") as f:
         html = f.read()
     html = html.replace('href="app.css"', f'href="app.css?v={STATIC_ASSET_VERSION}"')
-    html = html.replace('src="app.js"', f'src="app.js?v={STATIC_ASSET_VERSION}"')
+    html = html.replace('src="app.min.js"', f'src="app.min.js?v={STATIC_ASSET_VERSION}"')
     return html
 
 

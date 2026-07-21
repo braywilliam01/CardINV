@@ -1,7 +1,7 @@
-import gzip
 import json
 import logging
 import time
+import zlib
 from datetime import datetime, timezone
 
 import httpx
@@ -80,52 +80,66 @@ def _get_bulk_entry(client: httpx.Client) -> dict:
     raise PricingError("Could not find 'default_cards' bulk data entry from Scryfall.")
 
 
-def _download_cards(client: httpx.Client, entry: dict) -> list[dict]:
+def _iter_cards(client: httpx.Client, entry: dict):
     """
-    Scryfall is retiring the plain-JSON bulk download in favor of
-    gzipped JSONL (one card object per line) — the old `download_uri`
-    stops working after July 20, 2026. This prefers `jsonl_download_uri`
-    when present and falls back to the legacy format only if it isn't
-    (e.g. if this runs against a stale/cached bulk-data index).
+    Streams and decompresses Scryfall's default_cards JSONL file
+    (jsonl_download_uri), yielding one parsed card dict at a time.
+
+    This *must* stream rather than download-then-parse-all-at-once: the
+    file is 500MB+ gzipped and multiple GB decompressed, and a previous
+    version of this function built the whole thing as one Python list
+    in memory before processing anything, which could exhaust RAM on a
+    modestly-provisioned deployment (see DEPLOY.md's RAM guidance).
+    Peak memory here is bounded to roughly one HTTP chunk plus one
+    decompression buffer, regardless of file size.
     """
     jsonl_uri = entry.get("jsonl_download_uri")
+    if not jsonl_uri:
+        raise PricingError("Bulk data entry has no jsonl_download_uri — Scryfall's bulk format may have changed.")
 
-    if jsonl_uri:
-        resp = client.get(jsonl_uri, headers=HEADERS, timeout=180)
-        resp.raise_for_status()
-        raw = resp.content
-        try:
-            raw = gzip.decompress(raw)
-        except OSError:
-            pass  # httpx/transport already decompressed it (Content-Encoding case)
+    # wbits = MAX_WBITS | 16 tells zlib to expect (and strip) a gzip
+    # header/trailer, so this decompresses gzip directly from a stream
+    # of arbitrarily-sized chunks rather than needing the whole
+    # compressed payload in memory first (as gzip.decompress() would).
+    decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    buffer = b""
 
-        cards = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if line:
-                cards.append(json.loads(line))
-        return cards
+    with client.stream("GET", jsonl_uri, headers=HEADERS, timeout=180) as response:
+        response.raise_for_status()
+        for chunk in response.iter_bytes():
+            if not chunk:
+                continue
+            buffer += decompressor.decompress(chunk)
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
-    # Legacy path — retired by Scryfall after 2026-07-20. Kept only as a
-    # fallback in case jsonl_download_uri is ever absent.
-    download_uri = entry.get("download_uri")
-    if not download_uri:
-        raise PricingError("Bulk data entry has neither jsonl_download_uri nor download_uri.")
-    resp = client.get(download_uri, headers=HEADERS, timeout=180)
-    resp.raise_for_status()
-    return resp.json()
+        buffer += decompressor.flush()
+        line = buffer.strip()
+        if line:
+            yield json.loads(line)
 
 
 def refresh_all_prices(db: Session) -> dict:
     """
-    Downloads Scryfall's default_cards bulk data file (every printing)
+    Streams Scryfall's default_cards bulk data file (every printing)
     and updates CardPrice for every *owned* printing currently in
     inventory — i.e. every non-unresolved Inventory row. One bulk
     download regardless of collection size, suitable for the weekly
     cron job or an on-demand "refresh everything" button. Only writes a
     CardPrice row for a printing actually in inventory (default_cards
     has ~10x the rows of oracle_cards; matching indiscriminately would
-    bloat the price table with printings nobody owns).
+    bloat the price table with printings nobody owns). Streamed via
+    _iter_cards rather than loaded into memory all at once — see that
+    function for why.
+
+    A split/double-faced/adventure card's `name` in the bulk file is
+    Scryfall's combined "Front // Back" — matched against both that and
+    the front face's name alone, since inventory (and Card Search)
+    store only the front face by convention, but a manual add or a
+    pasted decklist line can end up with the combined name instead.
 
     After matching, backfills an estimated price (cheapest known
     printing) for every name that also has an unresolved bucket — see
@@ -139,7 +153,10 @@ def refresh_all_prices(db: Session) -> dict:
     Logs progress at each stage (visible via `journalctl -u
     mtg-inventory -f`) and updates the in-memory status dict returned
     by get_refresh_status(), so progress is visible server-side while
-    this runs, not just after the HTTP request completes.
+    this runs, not just after the HTTP request completes. The total
+    card count isn't known upfront when streaming (Scryfall's bulk-data
+    index reports a byte size, not a row count), so total_cards_in_file
+    stays null until the run finishes.
     """
     inventory_names = {row.card_name for row in db.query(Inventory.card_name).distinct().all()}
 
@@ -176,72 +193,84 @@ def refresh_all_prices(db: Session) -> dict:
             logger.info("Fetching Scryfall bulk-data index...")
             entry = _get_bulk_entry(client)
 
-            _status["stage"] = "downloading"
+            _status["stage"] = "matching"
             size_hint = entry.get("size")
             logger.info(
-                "Downloading default_cards bulk file (%s)...",
-                f"~{size_hint / 1_000_000:.0f} MB" if size_hint else "size unknown",
+                "Streaming default_cards bulk file (%s)...",
+                f"~{size_hint / 1_000_000:.0f} MB compressed" if size_hint else "size unknown",
             )
-            cards = _download_cards(client, entry)
 
-        _status["total_cards_in_file"] = len(cards)
-        logger.info("Downloaded and parsed %d printings from Scryfall", len(cards))
+            matched_keys = set()
+            skipped_names: list[str] = []
+            now = datetime.now(timezone.utc)
+            pending_since_commit = 0
+            total_processed = 0
 
-        _status["stage"] = "matching"
-        matched_keys = set()
-        skipped_names: list[str] = []
-        now = datetime.now(timezone.utc)
-        pending_since_commit = 0
+            for card in _iter_cards(client, entry):
+                total_processed += 1
+                if total_processed % PROGRESS_UPDATE_INTERVAL == 0:
+                    _status["cards_processed"] = total_processed
 
-        for i, card in enumerate(cards):
-            if i % PROGRESS_UPDATE_INTERVAL == 0:
-                _status["cards_processed"] = i
+                name = card.get("name", "")
+                set_code = (card.get("set") or "").upper()
+                collector_number = card.get("collector_number") or ""
 
-            name = card.get("name", "")
-            set_code = (card.get("set") or "").upper()
-            collector_number = card.get("collector_number") or ""
-            key = (name.lower(), set_code, collector_number)
-            canonical = printing_lookup.get(key)
-            if canonical is None:
-                continue
+                # Try the bulk file's name as-is, and (for split/DFC/
+                # adventure cards) the front face's name alone too —
+                # see the docstring above.
+                candidate_names = {name}
+                raw_faces = card.get("card_faces") or []
+                if raw_faces:
+                    front_name = raw_faces[0].get("name")
+                    if front_name:
+                        candidate_names.add(front_name)
 
-            prices = card.get("prices", {}) or {}
-            try:
-                price_usd = float(prices["usd"]) if prices.get("usd") is not None else None
-                price_usd_foil = float(prices["usd_foil"]) if prices.get("usd_foil") is not None else None
-            except (TypeError, ValueError):
-                # Skip just this printing — e.g. Scryfall returning a
-                # non-numeric price string — rather than losing the
-                # whole refresh over one bad record.
-                logger.warning("Skipping '%s' (%s #%s) — malformed price data: %r", canonical, set_code, collector_number, prices)
-                skipped_names.append(canonical)
-                continue
+                canonical = None
+                for candidate in candidate_names:
+                    canonical = printing_lookup.get((candidate.lower(), set_code, collector_number))
+                    if canonical is not None:
+                        break
+                if canonical is None:
+                    continue
 
-            existing = (
-                db.query(CardPrice)
-                .filter(
-                    CardPrice.card_name == canonical,
-                    CardPrice.set_code == set_code,
-                    CardPrice.collector_number == collector_number,
+                prices = card.get("prices", {}) or {}
+                try:
+                    price_usd = float(prices["usd"]) if prices.get("usd") is not None else None
+                    price_usd_foil = float(prices["usd_foil"]) if prices.get("usd_foil") is not None else None
+                except (TypeError, ValueError):
+                    # Skip just this printing — e.g. Scryfall returning a
+                    # non-numeric price string — rather than losing the
+                    # whole refresh over one bad record.
+                    logger.warning("Skipping '%s' (%s #%s) — malformed price data: %r", canonical, set_code, collector_number, prices)
+                    skipped_names.append(canonical)
+                    continue
+
+                existing = (
+                    db.query(CardPrice)
+                    .filter(
+                        CardPrice.card_name == canonical,
+                        CardPrice.set_code == set_code,
+                        CardPrice.collector_number == collector_number,
+                    )
+                    .one_or_none()
                 )
-                .one_or_none()
-            )
-            if existing is None:
-                existing = CardPrice(card_name=canonical, set_code=set_code, collector_number=collector_number)
-                db.add(existing)
+                if existing is None:
+                    existing = CardPrice(card_name=canonical, set_code=set_code, collector_number=collector_number)
+                    db.add(existing)
 
-            existing.price_usd = price_usd
-            existing.price_usd_foil = price_usd_foil
-            existing.is_estimated = False
-            existing.updated_at = now
-            matched_keys.add(key)
+                existing.price_usd = price_usd
+                existing.price_usd_foil = price_usd_foil
+                existing.is_estimated = False
+                existing.updated_at = now
+                matched_keys.add((canonical.lower(), set_code, collector_number))
 
-            pending_since_commit += 1
-            if pending_since_commit >= BATCH_COMMIT_SIZE:
-                db.commit()
-                pending_since_commit = 0
+                pending_since_commit += 1
+                if pending_since_commit >= BATCH_COMMIT_SIZE:
+                    db.commit()
+                    pending_since_commit = 0
 
-        _status["cards_processed"] = len(cards)
+        _status["cards_processed"] = total_processed
+        _status["total_cards_in_file"] = total_processed
         db.commit()
 
         _status["stage"] = "estimating"

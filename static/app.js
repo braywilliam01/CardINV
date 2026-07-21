@@ -857,6 +857,7 @@ function formatStage(stage) {
     fetching_index: "Contacting price API...",
     downloading: "Downloading price data...",
     matching: "Matching against your collection...",
+    estimating: "Estimating unresolved printings...",
     committing: "Saving prices...",
   };
   return labels[stage] || "Working...";
@@ -870,8 +871,13 @@ async function pollRefreshStatus(progressEl) {
     if (!status.in_progress) return false;
 
     let text = formatStage(status.stage);
-    if (status.stage === "matching" && status.total_cards_in_file) {
-      text += ` (${status.cards_processed.toLocaleString()} / ${status.total_cards_in_file.toLocaleString()})`;
+    if (status.stage === "matching" && status.cards_processed) {
+      // The Magic refresh streams the bulk file rather than loading it
+      // all into memory first (see pricing.py), so the total isn't
+      // known until the run finishes — show a running count either way.
+      text += status.total_cards_in_file
+        ? ` (${status.cards_processed.toLocaleString()} / ${status.total_cards_in_file.toLocaleString()})`
+        : ` (${status.cards_processed.toLocaleString()} scanned so far)`;
     }
     progressEl.textContent = text;
     return true;
@@ -1198,10 +1204,10 @@ function renderPrintingsPanel(card) {
       }
 
       try {
-        const res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(card.card_name)}/assign-printing`, {
+        const res = await fetch(`${API_BASE}/inventory/assign-printing`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ quantity: qty, set_code: setCode, collector_number: number }),
+          body: JSON.stringify({ card_name: card.card_name, quantity: qty, set_code: setCode, collector_number: number }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
@@ -1219,10 +1225,10 @@ function renderPrintingsPanel(card) {
 
 async function saveQuantity(cardName, newQty, setCode = "", collectorNumber = "") {
   try {
-    const res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(cardName)}`, {
+    const res = await fetch(`${API_BASE}/inventory`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ total_quantity: newQty, set_code: setCode, collector_number: collectorNumber }),
+      body: JSON.stringify({ card_name: cardName, total_quantity: newQty, set_code: setCode, collector_number: collectorNumber }),
     });
     const data = await res.json();
 
@@ -1251,7 +1257,7 @@ async function deleteCard(cardName) {
     // First attempt: blocked by default if checked out anywhere. This
     // deletes every printing of the card — see deletePrinting for
     // removing just one.
-    let res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(cardName)}`, { method: "DELETE" });
+    let res = await fetch(`${API_BASE}/inventory?card_name=${encodeURIComponent(cardName)}`, { method: "DELETE" });
 
     if (res.status === 409) {
       const data = await res.json();
@@ -1266,7 +1272,7 @@ async function deleteCard(cardName) {
 
       if (!confirmed) return;
 
-      res = await fetch(`${API_BASE}/inventory/${encodeURIComponent(cardName)}?force=true`, { method: "DELETE" });
+      res = await fetch(`${API_BASE}/inventory?card_name=${encodeURIComponent(cardName)}&force=true`, { method: "DELETE" });
     } else if (res.ok) {
       // No deck holds — still confirm since deletion is permanent either way.
       // (res already succeeded above, nothing further needed.)
@@ -1286,9 +1292,9 @@ async function deleteCard(cardName) {
 async function deletePrinting(cardName, setCode, collectorNumber) {
   const label = setCode || collectorNumber ? `${setCode} #${collectorNumber}` : "unresolved";
   try {
-    const params = new URLSearchParams({ set_code: setCode || "", collector_number: collectorNumber || "" });
+    const params = new URLSearchParams({ card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "" });
     let res = await fetch(
-      `${API_BASE}/inventory/${encodeURIComponent(cardName)}/printing?${params.toString()}`,
+      `${API_BASE}/inventory/printing?${params.toString()}`,
       { method: "DELETE" }
     );
 
@@ -1306,7 +1312,7 @@ async function deletePrinting(cardName, setCode, collectorNumber) {
 
       params.set("force", "true");
       res = await fetch(
-        `${API_BASE}/inventory/${encodeURIComponent(cardName)}/printing?${params.toString()}`,
+        `${API_BASE}/inventory/printing?${params.toString()}`,
         { method: "DELETE" }
       );
     }
@@ -1327,9 +1333,9 @@ async function refreshCardPrice(cardName, setCode, collectorNumber, btn) {
   btn.disabled = true;
   btn.textContent = "...";
   try {
-    const params = new URLSearchParams({ set_code: setCode || "", collector_number: collectorNumber || "" });
+    const params = new URLSearchParams({ card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "" });
     const res = await fetch(
-      `${API_BASE}/pricing/refresh-card/${encodeURIComponent(cardName)}?${params.toString()}`,
+      `${API_BASE}/pricing/refresh-card?${params.toString()}`,
       { method: "POST" }
     );
     const data = await res.json();

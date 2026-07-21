@@ -487,12 +487,14 @@ class AddCardRequest(BaseModel):
 
 
 class AdjustQuantityRequest(BaseModel):
+    card_name: str
     total_quantity: int
     set_code: str = ""
     collector_number: str = ""
 
 
 class AssignPrintingRequest(BaseModel):
+    card_name: str
     quantity: int
     set_code: str
     collector_number: str
@@ -575,33 +577,41 @@ def create_card(req: AddCardRequest, db: Session = Depends(get_db)):
     return _row_to_dict(row)
 
 
-@app.get("/api/inventory/{card_name}/printings")
+@app.get("/api/inventory/printings")
 def get_card_printings(card_name: str, db: Session = Depends(get_db)):
     """Per-printing breakdown for one card name — powers expanding a
-    Manage Collection row and the fix-up modal."""
+    Manage Collection row and the fix-up modal.
+
+    card_name is a query param, not a path segment — a card name can
+    itself contain "/" (a split/DFC card added under its full combined
+    name, e.g. "Fire // Ice"), and a "/" in a path segment gets
+    decoded and treated as an extra path separator well before it
+    reaches route matching, breaking the match entirely. Every
+    endpoint below that takes a card_name follows the same rule for
+    the same reason."""
     printings = get_printings_for_card(db, card_name)
     return {"printings": [_printing_to_dict(p) for p in printings]}
 
 
-@app.post("/api/inventory/{card_name}/assign-printing")
-def assign_printing_endpoint(card_name: str, req: AssignPrintingRequest, db: Session = Depends(get_db)):
+@app.post("/api/inventory/assign-printing")
+def assign_printing_endpoint(req: AssignPrintingRequest, db: Session = Depends(get_db)):
     """Fix-up workflow: moves `quantity` copies of card_name out of the
     unresolved bucket and into a specific (set_code, collector_number)
     printing."""
     try:
-        row = assign_printing(db, card_name, req.quantity, req.set_code, req.collector_number)
+        row = assign_printing(db, req.card_name, req.quantity, req.set_code, req.collector_number)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _row_to_dict(row)
 
 
-@app.patch("/api/inventory/{card_name}")
-def update_card_quantity(card_name: str, req: AdjustQuantityRequest, db: Session = Depends(get_db)):
+@app.patch("/api/inventory")
+def update_card_quantity(req: AdjustQuantityRequest, db: Session = Depends(get_db)):
     """Sets one printing's total_quantity — set_code/collector_number
     default to the unresolved bucket, which is also the only printing
     a simple (not-yet-expanded) card has."""
     try:
-        row = adjust_quantity(db, card_name, req.total_quantity, req.set_code, req.collector_number)
+        row = adjust_quantity(db, req.card_name, req.total_quantity, req.set_code, req.collector_number)
     except BlockedDeleteError as e:
         raise HTTPException(
             status_code=409,
@@ -615,11 +625,11 @@ def update_card_quantity(card_name: str, req: AdjustQuantityRequest, db: Session
     return _row_to_dict(row)
 
 
-@app.delete("/api/inventory/{card_name}")
+@app.delete("/api/inventory")
 def remove_card(card_name: str, force: bool = False, db: Session = Depends(get_db)):
     """Deletes every printing of card_name — the delete button on
     Manage Collection's main (collapsed) row. For deleting just one
-    printing, see DELETE /api/inventory/{card_name}/printing."""
+    printing, see DELETE /api/inventory/printing."""
     try:
         delete_card_group(db, card_name, force=force)
     except BlockedDeleteError as e:
@@ -635,7 +645,7 @@ def remove_card(card_name: str, force: bool = False, db: Session = Depends(get_d
     return {"deleted": card_name, "force": force}
 
 
-@app.delete("/api/inventory/{card_name}/printing")
+@app.delete("/api/inventory/printing")
 def remove_card_printing(
     card_name: str,
     set_code: str = "",
@@ -708,7 +718,7 @@ def pricing_refresh_bulk(db: Session = Depends(get_db), game: str = Depends(get_
     return result
 
 
-@app.post("/api/pricing/refresh-card/{card_name}")
+@app.post("/api/pricing/refresh-card")
 def pricing_refresh_card(
     card_name: str,
     set_code: str = "",

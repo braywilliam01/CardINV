@@ -482,15 +482,25 @@ def homepage_recent_cards(db: Session = Depends(get_db)):
 # Tab 3: Bulk Update (ManaBox CSV import)
 # ---------------------------------------------------------------------
 @app.post("/api/bulk-upload")
-async def bulk_upload(
+def bulk_upload(
     file: UploadFile = File(...),
     ignore_basic_lands: bool = Form(True),
     db: Session = Depends(get_db),
 ):
+    """
+    A plain (not async) route, deliberately — this was previously
+    `async def` for the `await file.read()` below, but that made the
+    synchronous, CPU-bound CSV parse that follows run directly on the
+    event loop instead of FastAPI's thread pool, blocking every other
+    user's requests for the duration of a large import. `file.file` is
+    a plain sync file object, so it works the same way in a sync route
+    (which FastAPI thread-pools automatically, like every other route
+    in this app) without needing `await`.
+    """
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a .csv export from ManaBox.")
 
-    raw_bytes = await file.read()
+    raw_bytes = file.file.read()
     try:
         csv_text = raw_bytes.decode("utf-8-sig")  # utf-8-sig handles ManaBox's BOM if present
     except UnicodeDecodeError:

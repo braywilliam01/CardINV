@@ -33,6 +33,7 @@ from .checkout import checkout_cards, checkin_cards, sync_checkout, sync_checkin
 from .csv_import import bulk_load_inventory
 from .inventory_admin import (
     list_inventory,
+    SORT_FIELDS,
     add_card,
     adjust_quantity,
     delete_card,
@@ -530,6 +531,7 @@ def _row_to_dict(row):
 
 
 VALID_PAGE_SIZES = (25, 50, 100)
+VALID_SORT_DIRS = ("asc", "desc")
 
 
 @app.get("/api/inventory")
@@ -537,16 +539,34 @@ def get_inventory(
     search: str | None = None,
     page: int = 1,
     page_size: int = 50,
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    unresolved_only: bool = False,
+    checked_out_only: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Paginated for the Manage Collection table — see /api/inventory/names
-    for an unpaginated list of every card name (e.g. for autocomplete)."""
+    """Paginated, filtered, and sorted for the Manage Collection table —
+    see /api/inventory/names for an unpaginated list of every card name
+    (e.g. for autocomplete)."""
     if page < 1:
         raise HTTPException(status_code=400, detail="page must be 1 or greater.")
     if page_size not in VALID_PAGE_SIZES:
         raise HTTPException(status_code=400, detail=f"page_size must be one of {VALID_PAGE_SIZES}.")
+    if sort_by not in SORT_FIELDS:
+        raise HTTPException(status_code=400, detail=f"sort_by must be one of {SORT_FIELDS}.")
+    if sort_dir not in VALID_SORT_DIRS:
+        raise HTTPException(status_code=400, detail=f"sort_dir must be one of {VALID_SORT_DIRS}.")
 
-    result = list_inventory(db, search=search, page=page, page_size=page_size)
+    result = list_inventory(
+        db,
+        search=search,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        unresolved_only=unresolved_only,
+        checked_out_only=checked_out_only,
+    )
     total_pages = max(1, -(-result.total_count // page_size))  # ceil division
     return {
         "cards": [_row_to_dict(r) for r in result.rows],

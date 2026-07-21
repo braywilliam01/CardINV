@@ -926,8 +926,18 @@ let managePageSize = 50;
 
 async function loadInventory() {
   const search = document.getElementById("manage-search").value.trim();
-  const params = new URLSearchParams({ page: managePage, page_size: managePageSize });
+  const [sortBy, sortDir] = document.getElementById("manage-sort").value.split(":");
+  const unresolvedOnly = document.getElementById("manage-filter-unresolved").checked;
+  const checkedOutOnly = document.getElementById("manage-filter-checked-out").checked;
+  const params = new URLSearchParams({
+    page: managePage,
+    page_size: managePageSize,
+    sort_by: sortBy,
+    sort_dir: sortDir,
+  });
   if (search) params.set("search", search);
+  if (unresolvedOnly) params.set("unresolved_only", "true");
+  if (checkedOutOnly) params.set("checked_out_only", "true");
 
   try {
     const res = await fetch(`${API_BASE}/inventory?${params.toString()}`);
@@ -972,6 +982,18 @@ document.getElementById("manage-prev-btn").addEventListener("click", () => {
 });
 document.getElementById("manage-next-btn").addEventListener("click", () => {
   managePage += 1;
+  loadInventory();
+});
+document.getElementById("manage-sort").addEventListener("change", () => {
+  managePage = 1;
+  loadInventory();
+});
+document.getElementById("manage-filter-unresolved").addEventListener("change", () => {
+  managePage = 1;
+  loadInventory();
+});
+document.getElementById("manage-filter-checked-out").addEventListener("change", () => {
+  managePage = 1;
   loadInventory();
 });
 document.getElementById("manage-page-size").addEventListener("change", (e) => {

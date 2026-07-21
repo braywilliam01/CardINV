@@ -398,6 +398,25 @@
     <div class="flex flex-wrap items-center gap-2 mb-4">
       <input id="manage-search" type="text" placeholder="Search collection..."
         class="flex-1 min-w-[160px] bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      <select id="manage-sort" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+        <option value="name:asc" selected>Name (A-Z)</option>
+        <option value="name:desc">Name (Z-A)</option>
+        <option value="total_quantity:desc">Quantity (high-low)</option>
+        <option value="total_quantity:asc">Quantity (low-high)</option>
+        <option value="checked_out:desc">Checked out (high-low)</option>
+        <option value="available:asc">Available (low-high)</option>
+        <option value="available:desc">Available (high-low)</option>
+        <option value="value:desc">Value (high-low)</option>
+        <option value="value:asc">Value (low-high)</option>
+      </select>
+      <label class="flex items-center gap-1 text-sm text-slate-400">
+        <input id="manage-filter-unresolved" type="checkbox" class="rounded border-slate-700 bg-slate-900">
+        Unresolved only
+      </label>
+      <label class="flex items-center gap-1 text-sm text-slate-400">
+        <input id="manage-filter-checked-out" type="checkbox" class="rounded border-slate-700 bg-slate-900">
+        Checked out only
+      </label>
       <select id="manage-page-size" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
         <option value="25">25 / page</option>
         <option value="50" selected>50 / page</option>

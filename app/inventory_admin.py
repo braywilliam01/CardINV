@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from sqlalchemy import func
+from sqlalchemy import func, case, and_
 from sqlalchemy.orm import Session
 
 from .models import Inventory, DeckAssignment, CardPrice
@@ -196,25 +196,133 @@ def build_group_row(db: Session, card_name: str) -> InventoryRow:
     )
 
 
+SORT_FIELDS = ("name", "total_quantity", "checked_out", "available", "value")
+
+
 def list_inventory(
-    db: Session, search: str | None = None, page: int = 1, page_size: int = 50
+    db: Session,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    unresolved_only: bool = False,
+    checked_out_only: bool = False,
 ) -> InventoryPage:
     """
     Returns one page of *grouped* inventory rows (one per card name,
     aggregated across every printing) plus the total distinct-name
-    count, for the Manage Collection tab's pagination controls.
-    Batches prices, deck assignments, and printing rows into three
-    queries scoped to just this page's card names, rather than one
-    query per row.
+    count, for the Manage Collection tab's pagination, filtering, and
+    sorting controls.
+
+    Sorting/filtering/pagination all happen in one SQL query, computing
+    each name's aggregates (total quantity, checked-out, available,
+    value) via GROUP BY + outer joins — this has to happen in SQL
+    rather than Python, since "page 2 sorted by value" needs to know
+    every name's aggregate value to decide what belongs on page 2, not
+    just whichever names happen to land there alphabetically. Once the
+    page's card_names are settled, prices/decks/printing rows are
+    batched into three more queries scoped to just those names (as
+    before), rather than one query per row.
     """
-    name_query = db.query(Inventory.card_name).distinct()
+    if sort_by not in SORT_FIELDS:
+        sort_by = "name"
+    descending = sort_dir == "desc"
+
+    # One row per card name: total quantity, and whether any of its
+    # printing rows is the unresolved ("", "") sentinel.
+    inv_agg = (
+        db.query(
+            Inventory.card_name.label("card_name"),
+            func.sum(Inventory.total_quantity).label("total_quantity"),
+            func.max(
+                case(
+                    (and_(Inventory.set_code == "", Inventory.collector_number == ""), 1),
+                    else_=0,
+                )
+            ).label("has_unresolved"),
+        )
+        .group_by(Inventory.card_name)
+        .subquery()
+    )
+
+    # One row per card name: total checked-out across every deck and printing.
+    deck_agg = (
+        db.query(
+            DeckAssignment.card_name.label("card_name"),
+            func.sum(DeckAssignment.quantity).label("checked_out"),
+        )
+        .filter(DeckAssignment.quantity > 0)
+        .group_by(DeckAssignment.card_name)
+        .subquery()
+    )
+
+    # One row per card name: total collection value, summing each
+    # printing's own price * quantity (same join shape as
+    # pricing.get_collection_value). NULL (not len(rows) == 0) when no
+    # printing has a cached price, so it can sort last either direction.
+    price_agg = (
+        db.query(
+            Inventory.card_name.label("card_name"),
+            func.sum(CardPrice.price_usd * Inventory.total_quantity).label("line_value"),
+        )
+        .join(
+            CardPrice,
+            and_(
+                Inventory.card_name == CardPrice.card_name,
+                Inventory.set_code == CardPrice.set_code,
+                Inventory.collector_number == CardPrice.collector_number,
+            ),
+        )
+        .filter(CardPrice.price_usd.isnot(None))
+        .group_by(Inventory.card_name)
+        .subquery()
+    )
+
+    checked_out_expr = func.coalesce(deck_agg.c.checked_out, 0)
+    available_expr = inv_agg.c.total_quantity - checked_out_expr
+
+    query = (
+        db.query(
+            inv_agg.c.card_name,
+            inv_agg.c.total_quantity,
+            inv_agg.c.has_unresolved,
+            checked_out_expr.label("checked_out"),
+            available_expr.label("available"),
+            price_agg.c.line_value,
+        )
+        .outerjoin(deck_agg, inv_agg.c.card_name == deck_agg.c.card_name)
+        .outerjoin(price_agg, inv_agg.c.card_name == price_agg.c.card_name)
+    )
+
     if search:
-        name_query = name_query.filter(Inventory.card_name.ilike(f"%{search}%"))
+        query = query.filter(inv_agg.c.card_name.ilike(f"%{search}%"))
+    if unresolved_only:
+        query = query.filter(inv_agg.c.has_unresolved == 1)
+    if checked_out_only:
+        query = query.filter(checked_out_expr > 0)
 
-    total_count = name_query.count()
+    total_count = query.count()
 
+    sort_columns = {
+        "name": inv_agg.c.card_name,
+        "total_quantity": inv_agg.c.total_quantity,
+        "checked_out": checked_out_expr,
+        "available": available_expr,
+        "value": price_agg.c.line_value,
+    }
+    sort_col = sort_columns[sort_by]
+    primary_order = sort_col.desc() if descending else sort_col.asc()
+    if sort_by == "value":
+        # Unpriced cards have a NULL aggregate value — always push them
+        # to the end regardless of sort direction, rather than letting
+        # "unknown" masquerade as the smallest value on an ascending sort.
+        primary_order = primary_order.nullslast()
+
+    # Secondary sort by name keeps ties (e.g. several cards with the
+    # same checked_out count) in a stable, predictable order.
     name_rows = (
-        name_query.order_by(Inventory.card_name.asc())
+        query.order_by(primary_order, inv_agg.c.card_name.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()

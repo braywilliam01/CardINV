@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Security/patch bumps land as small, easy-to-review individual
+      # PRs; anything else (minor/major) groups into one PR per run so
+      # a routine update doesn't spam a dozen separate PRs.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

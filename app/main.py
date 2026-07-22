@@ -89,13 +89,6 @@ if SESSION_SECRET_KEY == "dev-insecure-change-me-in-production":
         "Set it to a random value before deploying anywhere real (see DEPLOY.md)."
     )
 
-if not os.environ.get("POKEMONTCG_API_KEY"):
-    logger.warning(
-        "POKEMONTCG_API_KEY is not set — Pokemon Card Search/pricing is limited to "
-        "30 requests/min (1,000/day) and more likely to hit pokemontcg.io's own rate "
-        "limiting or intermittent errors. Free at https://dev.pokemontcg.io (see DEPLOY.md)."
-    )
-
 # Basic guard against automated login/registration abuse — see
 # rate_limit.py. Login gets a moderate window (room for genuine typos,
 # still blocks automated guessing); registration is stricter since a
@@ -103,12 +96,10 @@ if not os.environ.get("POKEMONTCG_API_KEY"):
 _login_rate_limiter = RateLimiter(max_requests=10, window_seconds=300)
 _register_rate_limiter = RateLimiter(max_requests=5, window_seconds=3600)
 
-# Card Search proxies to pokemontcg.io, which caps out at 30 requests/
-# minute *total* on the keyless tier (see pokemon_common.py) — that's
-# shared across every user of this deployment, not per-visitor, so one
-# person rapid-searching (accidentally or via a script) can exhaust it
-# for everyone else. This won't help once a POKEMONTCG_API_KEY is set
-# (much higher ceiling), but costs nothing and helps the common case.
+# Card Search proxies to Scryfall/TCGdex — neither publishes a strict
+# rate limit for this kind of use, but both ask callers to be
+# considerate, and this also just guards against one person's rapid
+# (accidental or scripted) searching hammering this app's own server.
 _card_lookup_rate_limiter = RateLimiter(max_requests=30, window_seconds=60)
 
 app.add_middleware(
@@ -133,7 +124,7 @@ _CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self'; "
-    "img-src 'self' https://cards.scryfall.io https://images.pokemontcg.io; "
+    "img-src 'self' https://cards.scryfall.io https://assets.tcgdex.net; "
     "connect-src 'self'; "
     "frame-ancestors 'self'; "
     "base-uri 'self'; "
@@ -476,7 +467,7 @@ def card_lookup(
     name: str, request: Request, db: Session = Depends(get_db), game: str = Depends(get_current_game)
 ):
     """Homepage's Card Search — fuzzy lookup (Scryfall for MTG,
-    pokemontcg.io for Pokemon, chosen by the session's active game) for
+    TCGdex for Pokemon, chosen by the session's active game) for
     one card's full printed info, plus how many copies are in your
     inventory. The only local writes are bumping the "Last Viewed"
     cache; use POST /api/inventory/quick-add to actually add a copy."""
@@ -484,7 +475,7 @@ def card_lookup(
     if not name.strip():
         raise HTTPException(status_code=400, detail="Enter a card name to search.")
 
-    provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
+    provider_name = "Scryfall" if game == "mtg" else "TCGdex"
     try:
         result = lookup_card(name.strip()) if game == "mtg" else pokemon_lookup_card(name.strip())
     except PokemonRateLimitError as e:
@@ -824,7 +815,7 @@ def bulk_remove(req: BulkInventoryRequest, db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------------
 # Pricing — bulk refresh for weekly/on-demand use, plus single-card
-# on-demand lookups. Scryfall for MTG, pokemontcg.io for Pokemon,
+# on-demand lookups. Scryfall for MTG, TCGdex for Pokemon,
 # chosen by the session's active game.
 # ---------------------------------------------------------------------
 @app.post("/api/pricing/refresh-bulk")
@@ -832,11 +823,11 @@ def pricing_refresh_bulk(db: Session = Depends(get_db), game: str = Depends(get_
     """
     Refreshes prices for every card in inventory in one go — MTG via
     Scryfall's single bulk-data file, Pokemon via paginating
-    pokemontcg.io's catalog (no bulk-price file exists there). This is
+    TCGdex's catalog (no bulk-price file exists there). This is
     the endpoint to hit from a weekly cron job (see DEPLOY.md) or an
     on-demand "refresh all prices" button.
     """
-    provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
+    provider_name = "Scryfall" if game == "mtg" else "TCGdex"
     try:
         result = refresh_all_prices(db) if game == "mtg" else pokemon_refresh_all_prices(db)
     except PricingError as e:
@@ -863,7 +854,7 @@ def pricing_refresh_card(
     single-printing row). Returns the card's full updated group row so
     the caller can refresh both the aggregate and per-printing display
     in one round trip."""
-    provider_name = "Scryfall" if game == "mtg" else "pokemontcg.io"
+    provider_name = "Scryfall" if game == "mtg" else "TCGdex"
     try:
         result = (
             refresh_single_price(db, card_name, set_code, collector_number)

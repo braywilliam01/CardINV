@@ -1,9 +1,10 @@
 """Card Search's per-IP rate limit (see main.py's _card_lookup_rate_limiter)
--- protects pokemontcg.io's shared keyless quota (30 req/min *total*,
-not per-visitor) from being exhausted by one rapid searcher. Uses an
-empty name so the limiter is exercised without spending real
-Scryfall/pokemontcg.io API calls -- the check happens before the
-name-validation 400, so this never reaches the network."""
+-- basic protection against one rapid searcher hammering this app's
+own server, and a bit of self-throttling as a "considerate" API
+citizen (Scryfall/TCGdex's only stated rate-limit guidance). Uses an
+empty name so the limiter is exercised without spending real API
+calls -- the check happens before the name-validation 400, so this
+never reaches the network."""
 import uuid
 
 from fastapi.testclient import TestClient

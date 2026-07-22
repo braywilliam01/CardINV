@@ -28,7 +28,7 @@ data behind a login.
   lookups at either the card or printing level, and the fix-up flow for
   resolving unresolved copies to a specific printing.
 - **Per-printing pricing** — Magic prices come from Scryfall's full
-  per-printing bulk data; Pokémon prices from pokemontcg.io. An
+  per-printing bulk data; Pokémon prices from TCGdex. An
   unresolved bucket gets an *estimated* price (the cheapest known
   printing of that name) instead of pretending to know which printing
   it is — estimated prices are flagged as such everywhere they appear.
@@ -51,15 +51,15 @@ data behind a login.
   assignments are always preserved, with warnings surfaced for any
   assignment left short after the reconciliation.
 - **Card Search** — fuzzy lookup for any card's full printed info (image,
-  rules text, prices, legalities) — Scryfall for Magic, pokemontcg.io for
+  rules text, prices, legalities) — Scryfall for Magic, TCGdex for
   Pokémon — showing exactly how many of that specific printing you own,
   with a one-click add to inventory.
 
 ## Limitations
 
 - Pokémon card search has weaker typo tolerance than Magic's: Scryfall has
-  a dedicated fuzzy-match endpoint, pokemontcg.io doesn't, so Pokémon
-  lookups fall back to exact/substring matching plus local ranking.
+  a dedicated fuzzy-match endpoint, TCGdex doesn't, so Pokémon lookups
+  fall back to substring matching plus local ranking.
 - "Ignore Basic Lands" and the ManaBox CSV bulk importer are Magic-specific
   concepts with no Pokémon equivalent — they're hidden in Pokémon mode.
 - Registration is open to anyone who can reach the app — there's no invite
@@ -75,11 +75,13 @@ data behind a login.
   per (user, game) pair at `data/users/<username>/<mtg|pokemon>/inventory.db`
 - Auth: bcrypt password hashing + Starlette signed-cookie sessions
 - Card data: [Scryfall](https://scryfall.com) (Magic) and
-  [pokemontcg.io](https://pokemontcg.io) (Pokémon) — the latter works
-  keyless for personal use; set `POKEMONTCG_API_KEY` to raise its rate
-  limit from 1,000 to 20,000 requests/day if needed. Magic pricing pulls
-  Scryfall's `default_cards` bulk file (every printing, 500MB+ gzipped) —
-  see `DEPLOY.md` for the memory/timing implications of that
+  [TCGdex](https://tcgdex.dev) (Pokémon) — both free, no API key needed
+  for either. (Pokémon used pokemontcg.io until mid-2026; that project's
+  maintainers shifted focus to a paid successor, Scrydex, with no free
+  tier, so this moved to TCGdex — open source, still free, and includes
+  pricing directly on card responses.) Magic pricing pulls Scryfall's
+  `default_cards` bulk file (every printing, 500MB+ gzipped) — see
+  `DEPLOY.md` for the memory/timing implications of that
 - Frontend: vanilla HTML/JS + Tailwind, compiled to a static `static/app.css`
   (not the CDN build — the Play CDN script is fine for local dev but silently
   produces an unstyled page if anything on the network path, e.g. a reverse

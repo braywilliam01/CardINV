@@ -35,8 +35,8 @@ class PrintingRow:
     so availability is only meaningful at the card-name level — see
     InventoryRow. price_usd/price_usd_foil/is_estimated mirror
     CardPrice for this exact printing — is_estimated means the price
-    is a stand-in (cheapest known printing, or Scryfall/pokemontcg.io's
-    own fuzzy-name guess) rather than a fetch for this specific
+    is a stand-in (cheapest known printing, or Scryfall/TCGdex's own
+    best-guess name match) rather than a fetch for this specific
     printing; see price_estimation.py.
     """
     set_code: str

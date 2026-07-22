@@ -53,10 +53,6 @@ Put the result in an env file the systemd unit will load (step 6):
 # /opt/CardINV/.env
 SESSION_SECRET_KEY=<paste the generated value>
 SESSION_HTTPS_ONLY=true
-# Optional — raises the Pokemon price-refresh rate limit from 1,000 to
-# 20,000 requests/day. Free at https://dev.pokemontcg.io. Not required;
-# a full refresh (~82 paginated requests) fits comfortably without it.
-# POKEMONTCG_API_KEY=<your key>
 
 # Optional — relocates all SQLite data (default: ./data, i.e.
 # /opt/CardINV/data). Useful for putting data on a separate
@@ -108,9 +104,9 @@ promote an account to admin later without editing the database directly.
 invite code or approval step. Login, registration, and Card Search are
 all rate limited per IP (10 login attempts/5 min, 5 registrations/hour,
 30 card lookups/min — see app/rate_limit.py) as a basic guard against
-automated abuse; the Card Search limit doubles as protection for
-pokemontcg.io's shared keyless quota (30 req/min *total*, not per
-visitor — see the POKEMONTCG_API_KEY note above). This is a
+automated abuse, and as a bit of self-throttling out of consideration
+for Scryfall/TCGdex (neither publishes a strict rate limit for this
+kind of use, but both ask callers not to hammer them). This is a
 lightweight in-process limiter, not a hardened defense. Open
 registration is fine behind your own network or a tunnel/proxy you
 control, which covers the family/friends scale this is built for; if
@@ -216,7 +212,7 @@ find /opt/CardINV/backups -mtime +30 -delete
 chmod +x /etc/cron.daily/CardINV-backup
 ```
 
-**Weekly price refresh (Scryfall + pokemontcg.io):**
+**Weekly price refresh (Scryfall + TCGdex):**
 
 Prices are cached per (user, game) — each user's Magic and Pokemon
 databases each have their own `card_prices` table — and only update when
@@ -268,13 +264,18 @@ collection size, but it's larger than it looks: pricing is tracked per
 gzipped and growing**. Expect it to take anywhere from a minute to
 several minutes depending on the LXC's connection, and to briefly use
 well over 1GB of RAM while it's parsed (see the RAM note in step 1) —
-that memory spike is expected for this specific request, not a leak. The
-Pokemon refresh has no bulk-download equivalent — pokemontcg.io doesn't
-publish one — so it instead paginates the full catalog (~82 requests),
-which is slower per card but never spikes memory the way the Magic
-refresh does. Both are expected and fine for an unattended weekly job.
-If you'd rather refresh more or less often, adjust by moving the script
-to `/etc/cron.daily/` or a custom crontab entry instead of `cron.weekly`.
+that memory spike is expected for this specific request, not a leak.
+The Pokemon refresh works differently: TCGdex has no bulk-price file
+either, but unlike the previous provider its card-listing endpoint
+doesn't carry pricing at all — so rather than paginating its ~23k-card
+catalog, the app fetches each *owned* printing directly (one request
+per printing you actually have, not per card that exists). For a
+typical personal collection (tens to low hundreds of printings) this
+is both faster and lighter than the old catalog-paginating approach,
+and it never spikes memory the way the Magic refresh does. Both are
+expected and fine for an unattended weekly job. If you'd rather
+refresh more or less often, adjust by moving the script to
+`/etc/cron.daily/` or a custom crontab entry instead of `cron.weekly`.
 
 **Checking refresh progress server-side:** while a refresh is running
 (triggered by cron, the "Refresh All Prices" button, or a manual curl),

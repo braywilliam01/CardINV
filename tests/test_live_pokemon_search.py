@@ -1,0 +1,97 @@
+"""Pokemon Card Search against the real TCGdex API -- excluded from the
+default run (see pytest.ini's `-m "not live"`), since it needs network
+access and depends on a third party's uptime. Run explicitly with
+`pytest -m live`."""
+import pytest
+
+pytestmark = pytest.mark.live
+
+
+def _switch_to_pokemon(client):
+    res = client.put("/api/session/game", json={"game": "pokemon"})
+    assert res.status_code == 200, res.text
+
+
+def test_name_search_resolves_a_real_printing(registered_client):
+    _switch_to_pokemon(registered_client)
+    r = registered_client.get("/api/card-lookup", params={"name": "Charizard"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["name"] == "Charizard"
+    assert data["set_code"]
+    assert data["collector_number"]
+    assert data["primary"]["type_line"].startswith("Pok")  # Pokémon -- accent may or may not render depending on encoding
+
+
+def test_search_prefers_a_printing_with_an_image(registered_client):
+    """See pokemon_lookup.lookup_card's image-preferring heuristic --
+    a well-known name shouldn't land on an image-less promo printing
+    when better-illustrated printings exist among the results."""
+    _switch_to_pokemon(registered_client)
+    r = registered_client.get("/api/card-lookup", params={"name": "Charizard"})
+    assert r.status_code == 200, r.text
+    assert r.json()["primary"]["image_url"] is not None
+
+
+def test_bogus_name_404s_cleanly(registered_client):
+    _switch_to_pokemon(registered_client)
+    r = registered_client.get("/api/card-lookup", params={"name": "zzznonexistentpokemonxyz123"})
+    assert r.status_code == 404
+
+
+def test_add_to_inventory_carries_over_fetched_price(registered_client):
+    """End-to-end: Card Search fetches a real printing's price, and
+    Add to Inventory (quick-add) stores it immediately -- no separate
+    refresh needed. Not every printing has tracked pricing (promos
+    especially), so this tries a few well-known names and accepts the
+    first one that actually has price data, rather than asserting on
+    one specific card that might legitimately come back unpriced."""
+    _switch_to_pokemon(registered_client)
+
+    card = None
+    for name in ["Pikachu", "Charizard", "Mewtwo", "Blastoise", "Venusaur"]:
+        lookup = registered_client.get("/api/card-lookup", params={"name": name})
+        assert lookup.status_code == 200, lookup.text
+        data = lookup.json()
+        if data["prices"]:
+            card = data
+            break
+    assert card is not None, "none of the sample names had any tracked pricing -- unexpected"
+
+    add = registered_client.post(
+        "/api/inventory/quick-add",
+        json={
+            "card_name": card["inventory_name"],
+            "set_code": card["set_code"],
+            "collector_number": card["collector_number"],
+            "price_usd": card["prices"][0]["value"],
+            "price_usd_foil": card["prices"][1]["value"] if len(card["prices"]) > 1 else None,
+        },
+    )
+    assert add.status_code == 200, add.text
+
+    printings = registered_client.get(
+        "/api/inventory/printings", params={"card_name": card["inventory_name"]}
+    ).json()["printings"]
+    assert printings[0]["price_usd"] == card["prices"][0]["value"]
+
+
+def test_single_printing_refresh_matches_search_result(registered_client):
+    """Exercises lookup_card_printing's set_code -> TCGdex internal-id
+    resolution path (see sets_cache.resolve_pokemon_set_id) -- the
+    same path a real "$" refresh button click takes."""
+    _switch_to_pokemon(registered_client)
+    lookup = registered_client.get("/api/card-lookup", params={"name": "Charizard"})
+    card = lookup.json()
+
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": card["inventory_name"], "total_quantity": 1, "set_code": card["set_code"], "collector_number": card["collector_number"]},
+    )
+    refresh = registered_client.post(
+        "/api/pricing/refresh-card",
+        params={"card_name": card["inventory_name"], "set_code": card["set_code"], "collector_number": card["collector_number"]},
+    )
+    assert refresh.status_code == 200, refresh.text
+    printing = refresh.json()["printings"][0]
+    assert printing["is_estimated"] is False

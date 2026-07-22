@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -49,30 +50,58 @@ def _fetch_mtg_sets() -> list[dict]:
     ]
 
 
+def _fetch_one_pokemon_set_detail(client: httpx.Client, s: dict) -> dict | None:
+    set_id = s.get("id")
+    if not set_id:
+        return None
+    try:
+        detail_resp = client.get(f"{POKEMON_API_BASE}/sets/{set_id}", headers=POKEMON_HEADERS, timeout=15)
+        detail_resp.raise_for_status()
+        detail = detail_resp.json()
+    except httpx.HTTPError:
+        logger.warning("Skipping Pokemon set '%s' — detail fetch failed", set_id)
+        return None
+
+    code = (detail.get("tcgOnline") or (detail.get("abbreviation") or {}).get("official") or set_id).upper()
+    return {
+        "code": code,
+        "name": detail.get("name") or s.get("name"),
+        "released_at": detail.get("releaseDate"),
+        "id": set_id,
+    }
+
+
 def _fetch_pokemon_sets() -> list[dict]:
-    """Mirrors pokemon_lookup.py's set_code choice: ptcgoCode when
-    present, else id, uppercased."""
-    sets: list[dict] = []
+    """
+    TCGdex's set list endpoint doesn't include the official PTCGO-style
+    code (e.g. "DAA" for Darkness Ablaze) that this app's set_code has
+    always used — matching what pokemontcg.io's ptcgoCode gave, since
+    that's a Pokemon Company-standardized abbreviation, not something
+    provider-specific — only the per-set detail endpoint does (under
+    tcgOnline/abbreviation.official). So this fetches the list first,
+    then one detail request per set to resolve each one's real code —
+    ~220 sets. Sequential (with a polite delay between each) took
+    ~30s in practice, which is too slow for this to ever run inline on
+    a user's first Pokemon search of the week (see get_sets — this
+    only refreshes when the weekly cache is stale). A small thread
+    pool brings that down to a few seconds; still bounded and nowhere
+    near enough concurrency to look like abuse.
+
+    Each entry's `id` field is TCGdex's own internal set id (e.g.
+    "swsh3") — pokemon_lookup.py needs it to resolve a stored set_code
+    back to the right set for an exact-printing lookup, since TCGdex's
+    card search can only filter by internal set id, not by code.
+    """
     with httpx.Client(follow_redirects=True) as client:
-        page = 1
-        while True:
-            resp = client.get(
-                f"{POKEMON_API_BASE}/sets",
-                params={"page": page, "pageSize": 250},
-                headers=POKEMON_HEADERS,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            data = body.get("data", [])
-            if not data:
-                break
-            for s in data:
-                code = (s.get("ptcgoCode") or s.get("id") or "").upper()
-                sets.append({"code": code, "name": s.get("name"), "released_at": s.get("releaseDate")})
-            if len(data) < 250:
-                break
-            page += 1
+        resp = client.get(f"{POKEMON_API_BASE}/sets", headers=POKEMON_HEADERS, timeout=30)
+        resp.raise_for_status()
+        set_list = resp.json()
+
+        sets: list[dict] = []
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            for result in pool.map(lambda s: _fetch_one_pokemon_set_detail(client, s), set_list):
+                if result is not None:
+                    sets.append(result)
     return sets
 
 
@@ -98,8 +127,8 @@ def get_sets(game: str, force_refresh: bool = False) -> list[dict]:
     Returns the cached set list for `game`. Set lists are tiny
     (~1000 for MTG, ~200 for Pokemon) compared to card/price data, so
     this is just an in-memory list backed by a flat JSON file, not a
-    database table — refetched from Scryfall/pokemontcg.io only when
-    missing, stale, or force_refresh is requested.
+    database table — refetched from Scryfall/TCGdex only when missing,
+    stale, or force_refresh is requested.
     """
     now = time.time()
 
@@ -148,3 +177,23 @@ def search_sets(game: str, query: str, limit: int = 20) -> list[dict]:
         if query in (s.get("name") or "").lower() or query in (s.get("code") or "").lower()
     ]
     return matches[:limit]
+
+
+def resolve_pokemon_set_id(set_code: str) -> str | None:
+    """
+    Maps a stored set_code (the PTCGO-style code, e.g. "DAA" — see
+    _fetch_pokemon_sets) to TCGdex's own internal set id (e.g. "swsh3"),
+    which is what its card-search API actually needs to filter by (it
+    can't filter on the PTCGO code directly). Used by
+    pokemon_lookup.lookup_card_printing for exact-printing lookups
+    against printings already in a user's inventory, most of which
+    predate this app's move to TCGdex and only have the PTCGO code
+    on file.
+    """
+    set_code = (set_code or "").strip().upper()
+    if not set_code:
+        return None
+    for s in get_sets("pokemon"):
+        if s.get("code") == set_code:
+            return s.get("id")
+    return None

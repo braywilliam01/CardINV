@@ -1,4 +1,3 @@
-from datetime import datetime
 from sqlalchemy import Column, Integer, String, UniqueConstraint, Float, DateTime, Boolean
 from .database import Base
 
@@ -99,10 +98,13 @@ class CardPrice(Base):
     up is_estimated=True temporarily, if a single-card refresh only
     had a name to go on (see pricing.refresh_single_price).
 
-    price_usd_foil predates finish-as-identity and is now vestigial —
+    price_usd_foil predates finish-as-identity and is now dead weight —
     new writes only ever set price_usd (the price of *this* row's own
-    finish). It's kept, unwritten, only as a legacy read-fallback for
-    finish=="" rows that were priced before this column split existed.
+    finish), and nothing in the app reads price_usd_foil back. Old rows
+    written before this column split may still carry a real value here;
+    it's left alone rather than dropped outright, since removing a
+    column is its own schema migration and this one is harmless sitting
+    unused.
     """
     __tablename__ = "card_prices"
 

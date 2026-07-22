@@ -37,11 +37,11 @@ class PrintingRow:
     these are two independent axes, not one. No checked_out/available
     here: deck assignments aren't printing-specific yet (that's a
     later phase), so availability is only meaningful at the card-name
-    level — see InventoryRow. price_usd/price_usd_foil/is_estimated
-    mirror CardPrice for this exact printing/finish — is_estimated
-    means the price is a stand-in (cheapest known printing, or
-    Scryfall/TCGdex's own best-guess name match) rather than a fetch
-    for this specific printing; see price_estimation.py.
+    level — see InventoryRow. price_usd/is_estimated mirror CardPrice
+    for this exact printing/finish — is_estimated means the price is a
+    stand-in (cheapest known printing, or Scryfall/TCGdex's own
+    best-guess name match) rather than a fetch for this specific
+    printing; see price_estimation.py.
     """
     set_code: str
     collector_number: str
@@ -50,7 +50,6 @@ class PrintingRow:
     is_unresolved: bool
     is_finish_unspecified: bool
     price_usd: float | None = None
-    price_usd_foil: float | None = None
     is_estimated: bool = False
     line_value: float | None = None
 
@@ -132,7 +131,6 @@ def _decks_for(db: Session, card_name: str) -> list[DeckHold]:
 
 def _to_printing_row(inv: Inventory, price: CardPrice | None) -> PrintingRow:
     price_usd = price.price_usd if price else None
-    price_usd_foil = price.price_usd_foil if price else None
     line_value = round(price_usd * inv.total_quantity, 2) if price_usd is not None else None
     return PrintingRow(
         set_code=inv.set_code,
@@ -142,7 +140,6 @@ def _to_printing_row(inv: Inventory, price: CardPrice | None) -> PrintingRow:
         is_unresolved=(inv.set_code == "" and inv.collector_number == ""),
         is_finish_unspecified=(inv.finish == ""),
         price_usd=price_usd,
-        price_usd_foil=price_usd_foil,
         is_estimated=price.is_estimated if price else False,
         line_value=line_value,
     )

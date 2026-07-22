@@ -639,7 +639,6 @@ def _printing_to_dict(p):
         "total_quantity": p.total_quantity,
         "is_unresolved": p.is_unresolved,
         "price_usd": p.price_usd,
-        "price_usd_foil": p.price_usd_foil,
         "is_estimated": p.is_estimated,
         "line_value": p.line_value,
     }

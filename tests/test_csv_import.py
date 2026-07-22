@@ -34,7 +34,6 @@ def test_csv_import_with_set_and_number_columns(registered_client):
             "total_quantity": 4,
             "is_unresolved": False,
             "price_usd": None,
-            "price_usd_foil": None,
             "is_estimated": False,
             "line_value": None,
         }

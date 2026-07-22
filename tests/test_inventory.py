@@ -153,7 +153,6 @@ def test_quick_add_carries_over_known_price(registered_client):
             "total_quantity": 1,
             "is_unresolved": False,
             "price_usd": 1.36,
-            "price_usd_foil": None,
             "is_estimated": False,
             "line_value": 1.36,
         }

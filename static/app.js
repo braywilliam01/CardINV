@@ -4,6 +4,33 @@ const GAME_LABELS = { mtg: "Magic: The Gathering", pokemon: "Pokémon" };
 
 let currentGame = "mtg";
 
+// ---------- Shared message/warning render helpers ----------
+// Every form-submit handler in this file shows its result the same
+// way: a single inline message (error or success) in a dedicated
+// <div>, and/or a list of "⚠ ..." warning lines. Centralized here so
+// the color tokens and escaping only need to be right in one place.
+function setMsg(el, text, kind = "error") {
+  const colorClass = { success: "text-emerald-400", warning: "text-amber-400" }[kind] || "text-rose-400";
+  el.innerHTML = `<span class="${colorClass}">${escapeHtml(text)}</span>`;
+}
+
+function appendWarnings(container, warnings) {
+  warnings.forEach((w) => {
+    const div = document.createElement("div");
+    div.className = "text-amber-400";
+    div.textContent = `⚠ ${w}`;
+    container.appendChild(div);
+  });
+}
+
+function appendSkippedBasicsNote(container, count, noun = "line", trailingNote = "") {
+  if (count <= 0) return;
+  const div = document.createElement("div");
+  div.className = "text-slate-400";
+  div.textContent = `(Skipped ${count} basic land ${noun}${count > 1 ? "s" : ""}${trailingNote}.)`;
+  container.appendChild(div);
+}
+
 // ---------- Tab switching ----------
 async function activateTab(tabName) {
   document.querySelectorAll(".tab-link").forEach((el) => {
@@ -567,7 +594,7 @@ async function searchCard() {
   const name = input.value.trim();
 
   if (!name) {
-    msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
+    setMsg(msgEl, "Enter a card name.");
     return;
   }
 
@@ -596,7 +623,7 @@ async function searchCard() {
     renderCardDetail(data);
     showCardView();
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+    setMsg(msgEl, err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
@@ -664,17 +691,8 @@ document.getElementById("search-btn").addEventListener("click", async () => {
 
     const warnEl = document.getElementById("search-warnings");
     warnEl.innerHTML = "";
-    if (data.skipped_basic_lands > 0) {
-      const div = document.createElement("div");
-      div.className = "text-slate-400";
-      div.textContent = `(Skipped ${data.skipped_basic_lands} basic land line${data.skipped_basic_lands > 1 ? "s" : ""}.)`;
-      warnEl.appendChild(div);
-    }
-    data.warnings.forEach((w) => {
-      const div = document.createElement("div");
-      div.textContent = `⚠ ${w}`;
-      warnEl.appendChild(div);
-    });
+    appendSkippedBasicsNote(warnEl, data.skipped_basic_lands);
+    appendWarnings(warnEl, data.warnings);
   } catch (err) {
     alert(`Search failed: ${err.message}`);
   } finally {
@@ -716,16 +734,11 @@ async function loadDeckList() {
   }
 }
 
-function renderCheckoutResults(lines, warnings, containerId = "checkout-results") {
+function renderCheckoutResults(lines, warnings, containerId) {
   const container = document.getElementById(containerId);
   container.innerHTML = "";
 
-  warnings.forEach((w) => {
-    const div = document.createElement("div");
-    div.className = "text-amber-400";
-    div.textContent = `⚠ ${w}`;
-    container.appendChild(div);
-  });
+  appendWarnings(container, warnings);
 
   const statusColor = {
     ok: "text-emerald-400",
@@ -775,12 +788,7 @@ function renderSyncResults(lines, warnings, errors) {
   const container = document.getElementById("checkout-results");
   container.innerHTML = "";
 
-  warnings.forEach((w) => {
-    const div = document.createElement("div");
-    div.className = "text-amber-400";
-    div.textContent = `⚠ ${w}`;
-    container.appendChild(div);
-  });
+  appendWarnings(container, warnings);
 
   const statusColor = {
     ok: "text-emerald-400",
@@ -902,21 +910,11 @@ document.getElementById("csv-upload-btn").addEventListener("click", async () => 
         ${data.assignments_preserved} deck assignments preserved.
       </div>
     `;
-    if (data.skipped_basic_lands > 0) {
-      const div = document.createElement("div");
-      div.className = "text-slate-400";
-      div.textContent = `(Skipped ${data.skipped_basic_lands} basic land row${data.skipped_basic_lands > 1 ? "s" : ""} — not tracked in collection inventory.)`;
-      container.appendChild(div);
-    }
-    data.warnings.forEach((w) => {
-      const div = document.createElement("div");
-      div.className = "text-amber-400";
-      div.textContent = `⚠ ${w}`;
-      container.appendChild(div);
-    });
+    appendSkippedBasicsNote(container, data.skipped_basic_lands, "row", " — not tracked in collection inventory");
+    appendWarnings(container, data.warnings);
   } catch (err) {
     document.getElementById("bulk-result").innerHTML =
-      `<div class="text-rose-400">✗ Upload failed: ${err.message}</div>`;
+      `<div class="text-rose-400">✗ Upload failed: ${escapeHtml(err.message)}</div>`;
   } finally {
     btn.disabled = false;
     btn.textContent = "Upload & Replace Inventory";
@@ -1339,7 +1337,7 @@ function renderPrintingsPanel(card) {
         const msgEl = row.querySelector(".assign-finish-msg");
 
         if (isNaN(qty) || qty <= 0) {
-          msgEl.innerHTML = `<span class="text-rose-400">Enter a quantity of 1 or more.</span>`;
+          setMsg(msgEl, "Enter a quantity of 1 or more.");
           return;
         }
 
@@ -1357,7 +1355,7 @@ function renderPrintingsPanel(card) {
           if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
           loadInventory();
         } catch (err) {
-          msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+          setMsg(msgEl, err.message);
         }
       });
     }
@@ -1396,11 +1394,11 @@ function renderPrintingsPanel(card) {
       const msgEl = fixup.querySelector(".fixup-msg");
 
       if (!setCode && !number) {
-        msgEl.innerHTML = `<span class="text-rose-400">Enter a set and/or collector number.</span>`;
+        setMsg(msgEl, "Enter a set and/or collector number.");
         return;
       }
       if (isNaN(qty) || qty <= 0) {
-        msgEl.innerHTML = `<span class="text-rose-400">Enter a quantity of 1 or more.</span>`;
+        setMsg(msgEl, "Enter a quantity of 1 or more.");
         return;
       }
 
@@ -1417,7 +1415,7 @@ function renderPrintingsPanel(card) {
         if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
         loadInventory();
       } catch (err) {
-        msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+        setMsg(msgEl, err.message);
       }
     });
 
@@ -1480,9 +1478,6 @@ async function deleteCard(cardName) {
       if (!confirmed) return;
 
       res = await fetch(`${API_BASE}/inventory?card_name=${encodeURIComponent(cardName)}&force=true`, { method: "DELETE" });
-    } else if (res.ok) {
-      // No deck holds — still confirm since deletion is permanent either way.
-      // (res already succeeded above, nothing further needed.)
     }
 
     if (!res.ok) {
@@ -1583,11 +1578,11 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
   const finish = finishInput.value;
 
   if (!card_name) {
-    msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
+    setMsg(msgEl, "Enter a card name.");
     return;
   }
   if (isNaN(total_quantity) || total_quantity < 0) {
-    msgEl.innerHTML = `<span class="text-rose-400">Enter a valid quantity.</span>`;
+    setMsg(msgEl, "Enter a valid quantity.");
     return;
   }
 
@@ -1603,7 +1598,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
       throw new Error(data.detail || `Server error: ${res.status}`);
     }
 
-    msgEl.innerHTML = `<span class="text-emerald-400">Added '${escapeHtml(card_name)}'.</span>`;
+    setMsg(msgEl, `Added '${card_name}'.`, "success");
     nameInput.value = "";
     qtyInput.value = "1";
     setInput.value = "";
@@ -1611,7 +1606,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     finishInput.value = "";
     loadInventory();
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+    setMsg(msgEl, err.message);
   }
 });
 
@@ -1652,12 +1647,10 @@ wireSetAutocomplete("deck-add-card-set");
 // unresolved card row). ----------
 let currentFinishOptions = [];
 
-function finishSelectOptionsHtml(selected = "") {
+function finishSelectOptionsHtml() {
   return (
     `<option value="">Unspecified</option>` +
-    currentFinishOptions
-      .map((f) => `<option value="${escapeHtml(f)}"${f === selected ? " selected" : ""}>${escapeHtml(f)}</option>`)
-      .join("")
+    currentFinishOptions.map((f) => `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join("")
   );
 }
 
@@ -1685,19 +1678,8 @@ function renderBulkInvResults(lines, warnings, skippedBasics) {
   const container = document.getElementById("bulk-inv-results");
   container.innerHTML = "";
 
-  if (skippedBasics > 0) {
-    const div = document.createElement("div");
-    div.className = "text-slate-400";
-    div.textContent = `(Skipped ${skippedBasics} basic land line${skippedBasics > 1 ? "s" : ""}.)`;
-    container.appendChild(div);
-  }
-
-  warnings.forEach((w) => {
-    const div = document.createElement("div");
-    div.className = "text-amber-400";
-    div.textContent = `⚠ ${w}`;
-    container.appendChild(div);
-  });
+  appendSkippedBasicsNote(container, skippedBasics);
+  appendWarnings(container, warnings);
 
   const statusColor = {
     ok: "text-emerald-400",
@@ -2103,7 +2085,7 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
   const msgEl = document.getElementById("deck-add-msg");
 
   if (!deckName) {
-    msgEl.innerHTML = `<span class="text-rose-400">Select a deck first, or name your new deck above.</span>`;
+    setMsg(msgEl, "Select a deck first, or name your new deck above.");
     return;
   }
 
@@ -2113,11 +2095,11 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
   const collectorNumber = numberInput.value.trim();
 
   if (!cardName) {
-    msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
+    setMsg(msgEl, "Enter a card name.");
     return;
   }
   if (isNaN(qty) || qty < 1) {
-    msgEl.innerHTML = `<span class="text-rose-400">Enter a valid quantity.</span>`;
+    setMsg(msgEl, "Enter a valid quantity.");
     return;
   }
 
@@ -2136,9 +2118,9 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
 
     const line = data.lines[0];
     if (line && line.status === "ok") {
-      msgEl.innerHTML = `<span class="text-emerald-400">Added ${qty}x '${escapeHtml(cardName)}' to '${escapeHtml(deckName)}'.</span>`;
+      setMsg(msgEl, `Added ${qty}x '${cardName}' to '${deckName}'.`, "success");
     } else {
-      msgEl.innerHTML = `<span class="text-amber-400">${escapeHtml(line ? line.message : "Nothing was added.")}</span>`;
+      setMsg(msgEl, line ? line.message : "Nothing was added.", "warning");
     }
 
     nameInput.value = "";
@@ -2147,7 +2129,7 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
     numberInput.value = "";
     await afterDeckMutation(deckName);
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+    setMsg(msgEl, err.message);
   }
 });
 
@@ -2245,7 +2227,7 @@ document.getElementById("auth-submit-btn").addEventListener("click", async () =>
   const btn = document.getElementById("auth-submit-btn");
 
   if (!username || !password) {
-    msgEl.innerHTML = `<span class="text-rose-400">Enter a username and password.</span>`;
+    setMsg(msgEl, "Enter a username and password.");
     return;
   }
 
@@ -2265,7 +2247,7 @@ document.getElementById("auth-submit-btn").addEventListener("click", async () =>
     document.getElementById("auth-password").value = "";
     onAuthenticated(data.username, undefined, data.is_admin);
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+    setMsg(msgEl, err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
@@ -2310,11 +2292,11 @@ document.getElementById("settings-change-password-btn").addEventListener("click"
   const btn = document.getElementById("settings-change-password-btn");
 
   if (!currentPassword || !newPassword) {
-    msgEl.innerHTML = `<span class="text-rose-400">Fill in both password fields.</span>`;
+    setMsg(msgEl, "Fill in both password fields.");
     return;
   }
   if (newPassword !== confirmPassword) {
-    msgEl.innerHTML = `<span class="text-rose-400">New password and confirmation don't match.</span>`;
+    setMsg(msgEl, "New password and confirmation don't match.");
     return;
   }
 
@@ -2334,9 +2316,9 @@ document.getElementById("settings-change-password-btn").addEventListener("click"
     document.getElementById("settings-current-password").value = "";
     document.getElementById("settings-new-password").value = "";
     document.getElementById("settings-confirm-password").value = "";
-    msgEl.innerHTML = `<span class="text-emerald-400">Password updated.</span>`;
+    setMsg(msgEl, "Password updated.", "success");
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+    setMsg(msgEl, err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;

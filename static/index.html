@@ -9,25 +9,27 @@
 <body class="bg-slate-950 text-slate-100 min-h-screen">
 
 <!-- Hamburger menu button — fixed top-left, visible on every view -->
-<button id="menu-btn" type="button" aria-label="Open menu"
-  class="fixed top-4 left-4 z-30 w-10 h-10 flex items-center justify-center rounded-lg bg-slate-900 border border-slate-700 hover:border-indigo-500 text-slate-300 hover:text-indigo-400">
-  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-  </svg>
-</button>
+<header>
+  <button id="menu-btn" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="side-drawer"
+    class="fixed top-4 left-4 z-30 w-10 h-10 flex items-center justify-center rounded-lg bg-slate-900 border border-slate-700 hover:border-indigo-500 text-slate-300 hover:text-indigo-400">
+    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  </button>
+</header>
 
 <!-- Side drawer backdrop -->
 <div id="drawer-backdrop" class="fixed inset-0 bg-black/60 z-40 hidden"></div>
 
 <!-- Side drawer -->
-<nav id="side-drawer" class="fixed top-0 left-0 h-full w-64 bg-slate-900 border-r border-slate-700 z-50 -translate-x-full transition-transform duration-200 p-4">
+<nav id="side-drawer" aria-label="Menu" class="fixed top-0 left-0 h-full w-64 bg-slate-900 border-r border-slate-700 z-50 -translate-x-full transition-transform duration-200 p-4">
   <div class="flex items-center justify-between mb-6">
     <span class="font-bold text-slate-100">Menu</span>
     <button id="drawer-close-btn" type="button" aria-label="Close menu" class="text-slate-400 hover:text-slate-200 text-xl leading-none">&times;</button>
   </div>
 
   <div class="mb-4">
-    <div class="text-xs text-slate-500 uppercase tracking-wide mb-2 px-1">Game</div>
+    <div class="text-xs text-slate-400 uppercase tracking-wide mb-2 px-1">Game</div>
     <div class="grid grid-cols-3 gap-1 bg-slate-950 rounded-lg p-1">
       <button type="button" data-game-select="everything" class="game-switch-btn px-2 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-slate-200">
         Everything
@@ -61,7 +63,7 @@
     </button>
   </div>
   <div class="border-t border-slate-800 my-2"></div>
-  <div class="px-3 py-2 text-xs text-slate-500">
+  <div class="px-3 py-2 text-xs text-slate-400">
     Logged in as <span id="drawer-username" class="text-slate-300 font-medium"></span>
     <span id="drawer-admin-badge" class="hidden ml-1 px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-400 text-[10px] uppercase tracking-wide align-middle">Admin</span>
   </div>
@@ -70,20 +72,20 @@
   </button>
 </nav>
 
-<div class="max-w-5xl mx-auto p-4 sm:p-6">
+<main class="max-w-5xl mx-auto p-4 sm:p-6">
   <button id="site-title-btn" type="button" class="text-2xl font-bold mb-6 ml-12 hover:text-indigo-400 transition-colors">
-    MTG Inventory Manager
+    <h1 class="inline text-2xl font-bold">MTG Inventory Manager</h1>
   </button>
 
   <!-- ===================== AUTH (LOGIN / REGISTER) ===================== -->
   <section id="view-auth" class="hidden max-w-sm">
     <h2 id="auth-heading" class="text-lg font-semibold mb-4">Log In</h2>
 
-    <label class="block text-sm text-slate-400 mb-1">Username</label>
+    <label for="auth-username" class="block text-sm text-slate-400 mb-1">Username</label>
     <input id="auth-username" type="text" autocomplete="username"
       class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-3">
 
-    <label class="block text-sm text-slate-400 mb-1">Password</label>
+    <label for="auth-password" class="block text-sm text-slate-400 mb-1">Password</label>
     <input id="auth-password" type="password" autocomplete="current-password"
       class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-4">
 
@@ -95,7 +97,7 @@
       Need an account? Register
     </button>
 
-    <div id="auth-msg" class="text-sm mt-3"></div>
+    <div id="auth-msg" class="text-sm mt-3" aria-live="polite"></div>
   </section>
 
   <!-- ===================== HOMEPAGE ===================== -->
@@ -103,47 +105,47 @@
     <div id="home-game-label" class="text-sm text-slate-400 mb-4"></div>
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Total Cards</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Total Cards</div>
         <div id="home-total-cards" class="text-2xl font-bold text-slate-100 mt-1">—</div>
-        <div id="home-unique-cards" class="text-xs text-slate-500 mt-1"></div>
+        <div id="home-unique-cards" class="text-xs text-slate-400 mt-1"></div>
       </div>
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Decks</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Decks</div>
         <div id="home-deck-count" class="text-2xl font-bold text-slate-100 mt-1">—</div>
       </div>
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Collection Value</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Collection Value</div>
         <div id="home-collection-value" class="text-2xl font-bold text-emerald-400 mt-1">—</div>
       </div>
     </div>
 
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-6">
-      <h3 class="font-semibold mb-3 text-sm text-slate-300">Card Search</h3>
+      <h2 class="font-semibold mb-3 text-sm text-slate-300">Card Search</h2>
       <div class="flex flex-wrap gap-2">
-        <input id="card-search-input" type="text" placeholder="Card name..."
+        <input id="card-search-input" type="text" placeholder="Card name..." aria-label="Card name"
           class="flex-1 min-w-[160px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <button id="card-search-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
           Search
         </button>
       </div>
-      <p class="text-xs text-slate-500 mt-2">
+      <p class="text-xs text-slate-400 mt-2">
         Search by card name — misspellings are OK, this finds the closest match.
       </p>
-      <p class="game-mtg-only text-xs text-slate-500 mt-1">
+      <p class="game-mtg-only text-xs text-slate-400 mt-1">
         For an exact printing instead of a best guess, add the set code and collector number: "Lightning Bolt, CLB 304" — or search "CLB 304" by itself with no card name. A "#" before the number (e.g. "CLB #304") works too.
       </p>
-      <div id="card-search-msg" class="text-sm mt-2"></div>
+      <div id="card-search-msg" class="text-sm mt-2" aria-live="polite"></div>
     </div>
 
-    <h3 class="font-semibold mb-3 text-sm text-slate-300">Last Viewed</h3>
+    <h2 class="font-semibold mb-3 text-sm text-slate-300">Last Viewed</h2>
     <div id="home-recent-cards" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3"></div>
-    <div id="home-recent-cards-empty" class="text-slate-500 text-sm mb-6 hidden">
+    <div id="home-recent-cards-empty" class="text-slate-400 text-sm mb-6 hidden">
       No cards viewed yet — search for one above.
     </div>
 
-    <h3 class="font-semibold mb-3 text-sm text-slate-300">Deck Access</h3>
+    <h2 class="font-semibold mb-3 text-sm text-slate-300">Deck Access</h2>
     <div id="home-deck-shortcuts" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3"></div>
-    <div id="home-deck-shortcuts-empty" class="text-slate-500 text-sm mb-6 hidden">
+    <div id="home-deck-shortcuts-empty" class="text-slate-400 text-sm mb-6 hidden">
       No decks yet — check some cards out to a deck to see shortcuts here.
     </div>
   </section>
@@ -154,21 +156,21 @@
 
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Total Cards</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Total Cards</div>
         <div id="everything-total-cards" class="text-2xl font-bold text-slate-100 mt-1">—</div>
-        <div id="everything-unique-cards" class="text-xs text-slate-500 mt-1"></div>
+        <div id="everything-unique-cards" class="text-xs text-slate-400 mt-1"></div>
       </div>
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Decks</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Decks</div>
         <div id="everything-deck-count" class="text-2xl font-bold text-slate-100 mt-1">—</div>
       </div>
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Collection Value</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Collection Value</div>
         <div id="everything-collection-value" class="text-2xl font-bold text-emerald-400 mt-1">—</div>
       </div>
     </div>
 
-    <h3 class="font-semibold mb-3 text-sm text-slate-300">By Game</h3>
+    <h2 class="font-semibold mb-3 text-sm text-slate-300">By Game</h2>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <button id="everything-mtg-card" type="button"
         class="bg-slate-900 border border-slate-700 hover:border-indigo-500 rounded-lg p-4 text-left transition-colors">
@@ -188,28 +190,28 @@
     <h2 class="text-lg font-semibold mb-4">Settings</h2>
 
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
-      <h3 class="font-semibold mb-3 text-sm text-slate-300">Change Password</h3>
+      <h2 class="font-semibold mb-3 text-sm text-slate-300">Change Password</h2>
 
-      <label class="block text-sm text-slate-400 mb-1">Current password</label>
+      <label for="settings-current-password" class="block text-sm text-slate-400 mb-1">Current password</label>
       <input id="settings-current-password" type="password" autocomplete="current-password"
         class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-3">
 
-      <label class="block text-sm text-slate-400 mb-1">New password</label>
+      <label for="settings-new-password" class="block text-sm text-slate-400 mb-1">New password</label>
       <input id="settings-new-password" type="password" autocomplete="new-password"
         class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-3">
 
-      <label class="block text-sm text-slate-400 mb-1">Confirm new password</label>
+      <label for="settings-confirm-password" class="block text-sm text-slate-400 mb-1">Confirm new password</label>
       <input id="settings-confirm-password" type="password" autocomplete="new-password"
         class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-4">
 
       <button id="settings-change-password-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
         Update Password
       </button>
-      <div id="settings-password-msg" class="text-sm mt-2"></div>
+      <div id="settings-password-msg" class="text-sm mt-2" aria-live="polite"></div>
     </div>
 
     <div id="settings-admin-panel" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4">
-      <h3 class="font-semibold mb-3 text-sm text-slate-300">Manage Users</h3>
+      <h2 class="font-semibold mb-3 text-sm text-slate-300">Manage Users</h2>
       <div id="settings-users-list" class="space-y-2"></div>
     </div>
   </section>
@@ -227,19 +229,19 @@
 
   <!-- ===================== TAB 1: SEARCH ===================== -->
   <section id="tab-search" class="tab-panel hidden">
-    <label class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
+    <label for="search-input" class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
     <textarea id="search-input" rows="10" maxlength="5100"
       class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"
       placeholder="4 Lightning Bolt (CLB) 304&#10;2 Ligtning Bolt x2"></textarea>
 
     <div class="flex flex-wrap items-center gap-3 sm:gap-4 mb-4">
-      <label class="text-sm text-slate-400">Typo tolerance</label>
+      <label for="search-threshold" class="text-sm text-slate-400">Typo tolerance</label>
 
       <div class="relative group flex items-center">
-        <button type="button" tabindex="0"
+        <button type="button" tabindex="0" aria-describedby="typo-tolerance-tip-search"
           class="w-4 h-4 rounded-full border border-slate-500 text-slate-400 text-[10px] leading-4 text-center hover:border-slate-300 hover:text-slate-200 focus:outline-none"
           aria-label="What does this number mean?">i</button>
-        <div class="pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 max-w-[80vw] bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs text-slate-300 shadow-lg z-10">
+        <div role="tooltip" id="typo-tolerance-tip-search" class="pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 max-w-[80vw] bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs text-slate-300 shadow-lg z-10">
           Controls how forgiving card-name matching is.
           <span class="text-slate-100 font-medium">1</span> = very loose — catches big typos and misspellings,
           but may occasionally match the wrong card.
@@ -251,7 +253,7 @@
       </div>
 
       <input id="search-threshold" type="range" min="1" max="10" step="1" value="7" class="w-28 sm:w-40">
-      <input id="search-threshold-val" type="number" min="1" max="10" step="1" value="7"
+      <input id="search-threshold-val" type="number" min="1" max="10" step="1" value="7" aria-label="Typo tolerance (numeric)"
         class="text-sm w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center">
 
       <button id="search-btn" class="w-full sm:w-auto sm:ml-auto bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium">
@@ -265,16 +267,16 @@
       Ignore Basic Lands (Plains, Island, Swamp, Mountain, Forest)
     </label>
 
-    <div id="search-warnings" class="text-amber-400 text-sm mb-4 space-y-1"></div>
+    <div id="search-warnings" class="text-amber-400 text-sm mb-4 space-y-1" aria-live="polite"></div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
-        <h3 class="font-semibold mb-2 text-emerald-400">Output 1 — Available</h3>
-        <textarea id="output-available" readonly rows="12"
+        <h2 class="font-semibold mb-2 text-emerald-400">Output 1 — Available</h2>
+        <textarea id="output-available" readonly rows="12" aria-label="Output 1 — Available"
           class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm"></textarea>
 
         <div class="flex flex-wrap items-center gap-2 mt-2">
-          <input id="output-deck-name" list="deck-list" type="text"
+          <input id="output-deck-name" list="deck-list" type="text" aria-label="New or existing deck name"
             class="flex-1 min-w-[140px] bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm"
             placeholder="New or existing deck name...">
           <datalist id="deck-list"></datalist>
@@ -282,11 +284,11 @@
             Add to Deck
           </button>
         </div>
-        <div id="output-add-to-deck-results" class="space-y-1 text-sm font-mono mt-2"></div>
+        <div id="output-add-to-deck-results" class="space-y-1 text-sm font-mono mt-2" aria-live="polite"></div>
       </div>
       <div>
-        <h3 class="font-semibold mb-2 text-rose-400">Output 2 — Missing</h3>
-        <textarea id="output-missing" readonly rows="12"
+        <h2 class="font-semibold mb-2 text-rose-400">Output 2 — Missing</h2>
+        <textarea id="output-missing" readonly rows="12" aria-label="Output 2 — Missing"
           class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm"></textarea>
       </div>
     </div>
@@ -295,13 +297,13 @@
   <!-- ===================== TAB 4: MANAGE COLLECTION ===================== -->
   <section id="tab-manage" class="tab-panel">
     <!-- Bulk Update (ManaBox CSV import) -->
-    <button id="bulk-update-toggle-btn" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg font-medium text-sm mb-4">
+    <button id="bulk-update-toggle-btn" aria-expanded="false" aria-controls="bulk-update-panel" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg font-medium text-sm mb-4">
       Bulk Update (CSV Import)
     </button>
 
     <div id="bulk-update-panel" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
       <div class="border-2 border-dashed border-slate-700 rounded-lg p-8 text-center mb-4">
-        <input id="csv-file-input" type="file" accept=".csv" class="hidden">
+        <input id="csv-file-input" type="file" accept=".csv" aria-label="Choose ManaBox CSV file" class="hidden">
         <button id="csv-choose-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium">
           Choose ManaBox CSV
         </button>
@@ -326,52 +328,52 @@
         Upload &amp; Replace Inventory
       </button>
 
-      <div id="bulk-result" class="text-sm space-y-1"></div>
+      <div id="bulk-result" class="text-sm space-y-1" aria-live="polite"></div>
     </div>
 
     <!-- Collection value / pricing -->
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
       <div>
-        <div class="text-xs text-slate-500 uppercase tracking-wide">Collection Value</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wide">Collection Value</div>
         <div id="collection-value" class="text-2xl font-bold text-emerald-400">—</div>
-        <div id="collection-value-detail" class="text-xs text-slate-500 mt-1"></div>
+        <div id="collection-value-detail" class="text-xs text-slate-400 mt-1"></div>
       </div>
       <button id="refresh-prices-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
         Refresh All Prices
       </button>
     </div>
-    <div id="refresh-progress" class="text-xs text-slate-500 -mt-3 mb-4 hidden"></div>
+    <div id="refresh-progress" class="text-xs text-slate-400 -mt-3 mb-4 hidden" aria-live="polite"></div>
 
     <!-- Add new card -->
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
-      <h3 class="font-semibold mb-3 text-sm text-slate-300">Add a card</h3>
+      <h2 class="font-semibold mb-3 text-sm text-slate-300">Add a card</h2>
       <div class="flex flex-wrap gap-2 mb-2">
-        <input id="add-card-name" type="text" placeholder="Card name"
+        <input id="add-card-name" type="text" placeholder="Card name" aria-label="Card name to add"
           class="flex-1 min-w-[140px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-        <input id="add-card-qty" type="number" min="0" value="1" placeholder="Qty"
+        <input id="add-card-qty" type="number" min="0" value="1" placeholder="Qty" aria-label="Quantity to add"
           class="w-20 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
       </div>
       <div class="flex flex-wrap gap-2 mb-2">
-        <input id="add-card-set" list="add-card-set-list" type="text" placeholder="Set (optional)"
+        <input id="add-card-set" list="add-card-set-list" type="text" placeholder="Set (optional)" aria-label="Set code (optional)"
           class="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <datalist id="add-card-set-list"></datalist>
-        <input id="add-card-number" type="text" placeholder="Collector # (optional)"
+        <input id="add-card-number" type="text" placeholder="Collector # (optional)" aria-label="Collector number (optional)"
           class="w-40 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <button id="add-card-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
           Add
         </button>
       </div>
-      <p class="text-xs text-slate-500">
+      <p class="text-xs text-slate-400">
         Leave Set/Number blank to add as an unresolved printing — you can assign specific copies to a
         printing later from the collection table below.
       </p>
-      <div id="add-card-msg" class="text-sm mt-2"></div>
+      <div id="add-card-msg" class="text-sm mt-2" aria-live="polite"></div>
     </div>
 
     <!-- Bulk add / remove -->
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
-      <h3 class="font-semibold mb-3 text-sm text-slate-300">Bulk add / remove</h3>
-      <label class="block text-xs text-slate-500 mb-1">
+      <h2 class="font-semibold mb-3 text-sm text-slate-300">Bulk add / remove</h2>
+      <label for="bulk-inv-input" class="block text-xs text-slate-400 mb-1">
         Paste a list (one card per line, e.g. "2 Lightning Bolt"). Add increases quantities
         (creating new cards if needed); Remove decreases them, but never below what's checked out to a deck.
       </label>
@@ -394,14 +396,14 @@
         </button>
       </div>
 
-      <div id="bulk-inv-results" class="space-y-1 text-sm font-mono"></div>
+      <div id="bulk-inv-results" class="space-y-1 text-sm font-mono" aria-live="polite"></div>
     </div>
 
     <!-- Search -->
     <div class="flex flex-wrap items-center gap-2 mb-4">
-      <input id="manage-search" type="text" placeholder="Search collection..."
+      <input id="manage-search" type="text" placeholder="Search collection..." aria-label="Search collection"
         class="flex-1 min-w-[160px] bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-      <select id="manage-sort" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+      <select id="manage-sort" aria-label="Sort collection by" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
         <option value="name:asc" selected>Name (A-Z)</option>
         <option value="name:desc">Name (Z-A)</option>
         <option value="total_quantity:desc">Quantity (high-low)</option>
@@ -420,7 +422,7 @@
         <input id="manage-filter-checked-out" type="checkbox" class="rounded border-slate-700 bg-slate-900">
         Checked out only
       </label>
-      <select id="manage-page-size" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+      <select id="manage-page-size" aria-label="Results per page" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
         <option value="25">25 / page</option>
         <option value="50" selected>50 / page</option>
         <option value="100">100 / page</option>
@@ -432,19 +434,19 @@
       <table class="w-full text-sm">
         <thead>
           <tr class="text-left text-slate-400 border-b border-slate-700">
-            <th class="py-2 pr-2 w-8"></th>
-            <th class="py-2 pr-2">Card Name</th>
-            <th class="py-2 px-2 w-24">Total</th>
-            <th class="py-2 px-2 w-24">Checked Out</th>
-            <th class="py-2 px-2 w-24">Available</th>
-            <th class="py-2 px-2 w-24">Price</th>
-            <th class="py-2 px-2 w-24">Value</th>
-            <th class="py-2 px-2 w-44">Actions</th>
+            <th scope="col" class="py-2 pr-2 w-8"><span class="sr-only">Expand</span></th>
+            <th scope="col" class="py-2 pr-2">Card Name</th>
+            <th scope="col" class="py-2 px-2 w-24">Total</th>
+            <th scope="col" class="py-2 px-2 w-24">Checked Out</th>
+            <th scope="col" class="py-2 px-2 w-24">Available</th>
+            <th scope="col" class="py-2 px-2 w-24">Price</th>
+            <th scope="col" class="py-2 px-2 w-24">Value</th>
+            <th scope="col" class="py-2 px-2 w-44">Actions</th>
           </tr>
         </thead>
         <tbody id="manage-table-body"></tbody>
       </table>
-      <div id="manage-empty" class="text-slate-500 text-sm py-6 text-center hidden">
+      <div id="manage-empty" class="text-slate-400 text-sm py-6 text-center hidden" aria-live="polite">
         No cards match your search.
       </div>
     </div>
@@ -466,16 +468,16 @@
 
   <!-- ===================== TAB: DECKS ===================== -->
   <section id="tab-decks" class="tab-panel hidden">
-    <label class="block text-sm text-slate-400 mb-1">Deck</label>
+    <label for="deck-select" class="block text-sm text-slate-400 mb-1">Deck</label>
     <div class="flex items-center gap-2 mb-2">
       <select id="deck-select"
         class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <option value="">-- choose a deck --</option>
         <option value="__new__">+ New Deck</option>
       </select>
-      <button id="deck-favorite-btn" type="button" disabled
-        class="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-500 hover:text-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-lg"
-        title="Favorite this deck">★</button>
+      <button id="deck-favorite-btn" type="button" disabled aria-pressed="false"
+        class="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-400 hover:text-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-lg"
+        title="Favorite this deck" aria-label="Favorite this deck">★</button>
       <button id="deck-rename-btn" type="button" disabled
         class="flex-shrink-0 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2 rounded-lg text-xs font-medium text-slate-300">
         Rename
@@ -485,31 +487,31 @@
         Delete
       </button>
     </div>
-    <input id="deck-new-name-input" type="text"
+    <input id="deck-new-name-input" type="text" aria-label="New deck name"
       class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 mb-4 hidden"
       placeholder="New deck name...">
 
     <div id="deck-view" class="hidden">
       <!-- Quick add to deck -->
       <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
-        <h3 class="font-semibold mb-3 text-sm text-slate-300">Add a card to this deck</h3>
+        <h2 class="font-semibold mb-3 text-sm text-slate-300">Add a card to this deck</h2>
         <div class="flex flex-wrap gap-2 mb-2">
-          <input id="deck-add-card-name" list="inventory-card-list" type="text" placeholder="Card name"
+          <input id="deck-add-card-name" list="inventory-card-list" type="text" placeholder="Card name" aria-label="Card name to add to this deck"
             class="flex-1 min-w-[140px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
           <datalist id="inventory-card-list"></datalist>
-          <input id="deck-add-card-qty" type="number" min="1" value="1"
+          <input id="deck-add-card-qty" type="number" min="1" value="1" aria-label="Quantity to add to this deck"
             class="w-20 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         </div>
         <div class="flex flex-wrap gap-2">
-          <input id="deck-add-card-set" list="add-card-set-list" type="text" placeholder="Set (optional — pins a printing)"
+          <input id="deck-add-card-set" list="add-card-set-list" type="text" placeholder="Set (optional — pins a printing)" aria-label="Set code (optional, pins a printing)"
             class="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-          <input id="deck-add-card-number" type="text" placeholder="Collector # (optional)"
+          <input id="deck-add-card-number" type="text" placeholder="Collector # (optional)" aria-label="Collector number (optional)"
             class="w-44 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
           <button id="deck-add-card-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
             Add
           </button>
         </div>
-        <div id="deck-add-msg" class="text-sm mt-2"></div>
+        <div id="deck-add-msg" class="text-sm mt-2" aria-live="polite"></div>
       </div>
 
       <!-- Deck contents table -->
@@ -517,27 +519,27 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="text-left text-slate-400 border-b border-slate-700">
-              <th class="py-2 pr-2">Card Name</th>
-              <th class="py-2 px-2 w-24">In Deck</th>
-              <th class="py-2 px-2 w-40">Actions</th>
+              <th scope="col" class="py-2 pr-2">Card Name</th>
+              <th scope="col" class="py-2 px-2 w-24">In Deck</th>
+              <th scope="col" class="py-2 px-2 w-40">Actions</th>
             </tr>
           </thead>
           <tbody id="deck-table-body"></tbody>
         </table>
       </div>
-      <div id="deck-empty" class="text-slate-500 text-sm py-6 text-center hidden">
+      <div id="deck-empty" class="text-slate-400 text-sm py-6 text-center hidden">
         This deck has no cards checked out.
       </div>
 
       <!-- Bulk edit (paste a decklist) -->
-      <button id="deck-bulk-toggle-btn" type="button"
+      <button id="deck-bulk-toggle-btn" type="button" aria-expanded="false" aria-controls="deck-bulk-panel"
         class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg font-medium text-sm mt-4 mb-4">
         Bulk Edit (Paste List)
       </button>
 
       <div id="deck-bulk-panel" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <label class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
-        <p class="text-xs text-slate-500 mb-1">
+        <label for="checkout-input" class="block text-sm text-slate-400 mb-1">Decklist (up to 100 lines)</label>
+        <p class="text-xs text-slate-400 mb-1">
           Loaded with this deck's current contents. Edit the quantities to the totals you want, then
           Check Out to add up to those totals or Check In to reduce down to them — lines you delete
           entirely are checked all the way in.
@@ -546,13 +548,13 @@
           class="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"></textarea>
 
         <div class="flex flex-wrap items-center gap-3 sm:gap-4 mb-4">
-          <label class="text-sm text-slate-400">Typo tolerance</label>
+          <label for="checkout-threshold" class="text-sm text-slate-400">Typo tolerance</label>
 
           <div class="relative group flex items-center">
-            <button type="button" tabindex="0"
+            <button type="button" tabindex="0" aria-describedby="typo-tolerance-tip-checkout"
               class="w-4 h-4 rounded-full border border-slate-500 text-slate-400 text-[10px] leading-4 text-center hover:border-slate-300 hover:text-slate-200 focus:outline-none"
               aria-label="What does this number mean?">i</button>
-            <div class="pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 max-w-[80vw] bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs text-slate-300 shadow-lg z-10">
+            <div role="tooltip" id="typo-tolerance-tip-checkout" class="pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 max-w-[80vw] bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs text-slate-300 shadow-lg z-10">
               Controls how forgiving card-name matching is.
               <span class="text-slate-100 font-medium">1</span> = very loose — catches big typos and misspellings,
               but may occasionally match the wrong card.
@@ -564,7 +566,7 @@
           </div>
 
           <input id="checkout-threshold" type="range" min="1" max="10" step="1" value="7" class="w-28 sm:w-40">
-          <input id="checkout-threshold-val" type="number" min="1" max="10" step="1" value="7"
+          <input id="checkout-threshold-val" type="number" min="1" max="10" step="1" value="7" aria-label="Typo tolerance (numeric)"
             class="text-sm w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center">
 
           <div class="w-full sm:w-auto sm:ml-auto flex gap-2">
@@ -577,13 +579,13 @@
           </div>
         </div>
 
-        <div id="checkout-results" class="space-y-1 text-sm font-mono"></div>
+        <div id="checkout-results" class="space-y-1 text-sm font-mono" aria-live="polite"></div>
       </div>
     </div>
   </section>
   </div><!-- /#view-app -->
-</div>
+</main>
 
-<script src="app.min.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

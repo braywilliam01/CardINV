@@ -886,9 +886,9 @@ def pricing_summary(db: Session = Depends(get_db)):
 
 def _static_asset_version() -> str:
     """
-    A short hash of app.min.js + app.css's actual bytes, computed once
-    at startup. Browsers (and Cloudflare) cache these aggressively via
-    a long max-age — without a version query string tied to content, a
+    A short hash of app.js + app.css's actual bytes, computed once at
+    startup. Browsers (and Cloudflare) cache these aggressively via a
+    long max-age — without a version query string tied to content, a
     deploy that changes either file is invisible to anyone with a warm
     cache until it expires on its own, which has already caused a
     real "backend and frontend disagree on the response shape" bug.
@@ -896,13 +896,16 @@ def _static_asset_version() -> str:
     freshly-fetched URL while still letting unchanged files stay
     cached indefinitely.
 
-    Hashes app.min.js (what's actually served — see static/app.js's
-    top-of-file comment on regenerating it) rather than app.js itself,
-    so the version always reflects the real served bytes even if
-    app.min.js is ever out of sync with its source.
+    (app.js is served unminified, deliberately — rjsmin was tried here
+    once and silently corrupted whitespace inside several template
+    literals, e.g. turning "3 printings" into "3printings". A regex
+    minifier that doesn't understand JS template-literal syntax isn't
+    safe for a codebase this heavy on backtick-string HTML generation,
+    so this stays unminified until/unless a template-literal-aware
+    minifier is used instead.)
     """
     hasher = hashlib.md5()
-    for filename in ("app.min.js", "app.css"):
+    for filename in ("app.js", "app.css"):
         with open(os.path.join("static", filename), "rb") as f:
             hasher.update(f.read())
     return hasher.hexdigest()[:10]
@@ -916,7 +919,7 @@ def index():
     with open(os.path.join("static", "index.html"), encoding="utf-8") as f:
         html = f.read()
     html = html.replace('href="app.css"', f'href="app.css?v={STATIC_ASSET_VERSION}"')
-    html = html.replace('src="app.min.js"', f'src="app.min.js?v={STATIC_ASSET_VERSION}"')
+    html = html.replace('src="app.js"', f'src="app.js?v={STATIC_ASSET_VERSION}"')
     return html
 
 

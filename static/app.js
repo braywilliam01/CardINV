@@ -1,12 +1,3 @@
-// This is the SOURCE file — index.html actually serves app.min.js
-// (see app/main.py's index() route). After editing this file,
-// regenerate it:
-//   python3 -c "import rjsmin; open('static/app.min.js','w').write(rjsmin.jsmin(open('static/app.js').read()))"
-// (pip install rjsmin if it's not already in the venv — it's a
-// build-time tool, not a runtime app dependency, so it's not in
-// requirements.txt.) Same idea as static/app.css being generated from
-// tailwind-input.css via the Tailwind CLI — don't edit app.min.js
-// directly, it'll just be overwritten next rebuild.
 const API_BASE = "/api";
 const DEFAULT_APP_TAB = "manage";
 const GAME_LABELS = { mtg: "Magic: The Gathering", pokemon: "Pokémon" };
@@ -31,19 +22,65 @@ async function activateTab(tabName) {
 }
 
 // ---------- Side drawer ----------
+// Behaves like a modal (the backdrop blocks interaction with the rest
+// of the page), so it gets the keyboard treatment a modal needs:
+// focus moves in on open and back to whatever opened it on close,
+// Escape closes it, and Tab is trapped inside while it's open —
+// otherwise a keyboard user tabbing past the last link falls straight
+// through the invisible backdrop into hidden page content.
+let lastFocusedBeforeDrawer = null;
+
+function getDrawerFocusable() {
+  return Array.from(
+    document.getElementById("side-drawer").querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+  ).filter((el) => el.offsetParent !== null);
+}
+
 function openDrawer() {
+  lastFocusedBeforeDrawer = document.activeElement;
   document.getElementById("side-drawer").classList.remove("-translate-x-full");
   document.getElementById("drawer-backdrop").classList.remove("hidden");
+  document.getElementById("menu-btn").setAttribute("aria-expanded", "true");
+  document.getElementById("drawer-close-btn").focus();
 }
 
 function closeDrawer() {
   document.getElementById("side-drawer").classList.add("-translate-x-full");
   document.getElementById("drawer-backdrop").classList.add("hidden");
+  document.getElementById("menu-btn").setAttribute("aria-expanded", "false");
+  if (lastFocusedBeforeDrawer) {
+    lastFocusedBeforeDrawer.focus();
+    lastFocusedBeforeDrawer = null;
+  }
 }
 
 document.getElementById("menu-btn").addEventListener("click", openDrawer);
 document.getElementById("drawer-backdrop").addEventListener("click", closeDrawer);
 document.getElementById("drawer-close-btn").addEventListener("click", closeDrawer);
+
+document.addEventListener("keydown", (e) => {
+  const drawerOpen = !document.getElementById("side-drawer").classList.contains("-translate-x-full");
+  if (!drawerOpen) return;
+
+  if (e.key === "Escape") {
+    closeDrawer();
+    return;
+  }
+
+  if (e.key === "Tab") {
+    const focusable = getDrawerFocusable();
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+});
 
 document.querySelectorAll(".nav-link[data-nav='home']").forEach((el) => {
   el.addEventListener("click", () => {
@@ -220,7 +257,7 @@ function renderRecentCards(cards) {
       ${thumb}
       <div class="min-w-0">
         <div class="font-medium text-slate-100 truncate">${escapeHtml(card.card_name)}</div>
-        <div class="text-xs text-slate-500 truncate">${escapeHtml(card.type_line || "")}</div>
+        <div class="text-xs text-slate-400 truncate">${escapeHtml(card.type_line || "")}</div>
       </div>
     `;
     btn.addEventListener("click", () => openRecentCard(card.card_name));
@@ -251,7 +288,7 @@ function renderDeckShortcuts(decks) {
       "bg-slate-900 border border-slate-700 hover:border-indigo-500 rounded-lg p-3 text-left transition-colors";
     btn.innerHTML = `
       <div class="font-medium text-slate-100 truncate">${deck.is_favorite ? "★ " : ""}${escapeHtml(deck.deck_name)}</div>
-      <div class="text-xs text-slate-500 mt-1">${deck.is_favorite ? "Favorited" : "Recently changed"}</div>
+      <div class="text-xs text-slate-400 mt-1">${deck.is_favorite ? "Favorited" : "Recently changed"}</div>
     `;
     btn.addEventListener("click", () => openDeckShortcut(deck.deck_name));
     container.appendChild(btn);
@@ -273,7 +310,7 @@ function legalityBadge(fmt, status) {
   const legal = status === "legal";
   const color = legal
     ? "bg-emerald-950/40 text-emerald-400 border-emerald-800"
-    : "bg-slate-800 text-slate-500 border-slate-700";
+    : "bg-slate-800 text-slate-400 border-slate-700";
   return `<span class="px-2 py-1 rounded border text-xs ${color}">${label}</span>`;
 }
 
@@ -301,7 +338,7 @@ function renderCardFace(face) {
         <p class="text-sm whitespace-pre-line mb-2">${escapeHtml(face.oracle_text || "")}</p>
         ${pt}
         ${loyalty}
-        ${face.flavor_text ? `<p class="text-xs italic text-slate-500">${escapeHtml(face.flavor_text)}</p>` : ""}
+        ${face.flavor_text ? `<p class="text-xs italic text-slate-400">${escapeHtml(face.flavor_text)}</p>` : ""}
       </div>
     </div>
   `;
@@ -325,13 +362,13 @@ function renderPriceHero(card) {
     ? `
       <div class="flex items-baseline gap-2 justify-center sm:justify-start">
         <span class="text-6xl sm:text-7xl font-black text-emerald-400 leading-none tracking-tight">$${Number(primary.value).toFixed(2)}</span>
-        <span class="text-sm text-slate-500 uppercase tracking-wide">${escapeHtml(primary.label)}</span>
+        <span class="text-sm text-slate-400 uppercase tracking-wide">${escapeHtml(primary.label)}</span>
       </div>
     `
-    : `<div class="text-xl font-semibold text-slate-500 text-center sm:text-left">No pricing available</div>`;
+    : `<div class="text-xl font-semibold text-slate-400 text-center sm:text-left">No pricing available</div>`;
 
   const secondaryHtml = secondary
-    .map((s) => `<span><span class="text-slate-500">${escapeHtml(s.label)}</span> $${Number(s.value).toFixed(2)}</span>`)
+    .map((s) => `<span><span class="text-slate-400">${escapeHtml(s.label)}</span> $${Number(s.value).toFixed(2)}</span>`)
     .join("");
 
   return `
@@ -340,7 +377,7 @@ function renderPriceHero(card) {
       ${secondaryHtml ? `<div class="flex flex-wrap gap-3 mt-2 text-sm text-slate-400 justify-center sm:justify-start">${secondaryHtml}</div>` : ""}
       <div class="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-emerald-900/50">
         <div class="text-sm text-slate-400">
-          <span class="text-slate-500"># owned:</span>
+          <span class="text-slate-400"># owned:</span>
           <span id="card-owned-qty" class="font-semibold text-slate-100 text-base">${card.owned_quantity}</span>
         </div>
         <button id="card-add-to-inventory-btn"
@@ -354,7 +391,7 @@ function renderPriceHero(card) {
 
 function renderMetaLine(card) {
   return `
-    <div class="text-xs text-slate-500 mt-4 space-y-1">
+    <div class="text-xs text-slate-400 mt-4 space-y-1">
       <div>${escapeHtml(card.set_name || "")} (${escapeHtml(card.set_code || "")}) #${escapeHtml(card.collector_number || "")} · ${escapeHtml(card.rarity || "")}</div>
       ${card.artist ? `<div>Illustrated by ${escapeHtml(card.artist)}</div>` : ""}
       ${card.external_url ? `<a href="${card.external_url}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300">${escapeHtml(card.external_url_label || "View source")} →</a>` : ""}
@@ -407,13 +444,13 @@ function renderPokemonCardBody(card) {
           ${card.hp ? `<span class="text-slate-400 text-sm">HP ${escapeHtml(card.hp)}</span>` : ""}
         </div>
         <div class="text-slate-400 text-sm mb-2">${escapeHtml(typeLine)}${types ? ` · ${escapeHtml(types)}` : ""}</div>
-        ${card.evolves_from ? `<div class="text-xs text-slate-500 mb-2">Evolves from ${escapeHtml(card.evolves_from)}</div>` : ""}
+        ${card.evolves_from ? `<div class="text-xs text-slate-400 mb-2">Evolves from ${escapeHtml(card.evolves_from)}</div>` : ""}
         ${abilities}
         ${attacks}
         ${weaknesses ? `<div class="text-sm text-slate-400 mt-2">Weakness: ${weaknesses}</div>` : ""}
         ${resistances ? `<div class="text-sm text-slate-400">Resistance: ${resistances}</div>` : ""}
         ${retreatCost ? `<div class="text-sm text-slate-400">Retreat Cost: ${retreatCost}</div>` : ""}
-        ${card.flavor_text ? `<p class="text-xs italic text-slate-500 mt-2">${escapeHtml(card.flavor_text)}</p>` : ""}
+        ${card.flavor_text ? `<p class="text-xs italic text-slate-400 mt-2">${escapeHtml(card.flavor_text)}</p>` : ""}
       </div>
     </div>
   `;
@@ -593,7 +630,7 @@ document.getElementById("search-btn").addEventListener("click", async () => {
     warnEl.innerHTML = "";
     if (data.skipped_basic_lands > 0) {
       const div = document.createElement("div");
-      div.className = "text-slate-500";
+      div.className = "text-slate-400";
       div.textContent = `(Skipped ${data.skipped_basic_lands} basic land line${data.skipped_basic_lands > 1 ? "s" : ""}.)`;
       warnEl.appendChild(div);
     }
@@ -729,7 +766,7 @@ function renderSyncResults(lines, warnings, errors) {
 
   if (lines.length > 0 && changed.length === 0) {
     const div = document.createElement("div");
-    div.className = "text-slate-500";
+    div.className = "text-slate-400";
     div.textContent = "No changes — the deck already matches this list.";
     container.appendChild(div);
   }
@@ -780,8 +817,10 @@ document.getElementById("checkin-btn").addEventListener("click", (e) => {
 });
 
 // ---------- Tab 4 (cont'd): Bulk Update (CSV import) ----------
-document.getElementById("bulk-update-toggle-btn").addEventListener("click", () => {
-  document.getElementById("bulk-update-panel").classList.toggle("hidden");
+document.getElementById("bulk-update-toggle-btn").addEventListener("click", (e) => {
+  const panel = document.getElementById("bulk-update-panel");
+  panel.classList.toggle("hidden");
+  e.currentTarget.setAttribute("aria-expanded", panel.classList.contains("hidden") ? "false" : "true");
 });
 
 let selectedFile = null;
@@ -829,7 +868,7 @@ document.getElementById("csv-upload-btn").addEventListener("click", async () => 
     `;
     if (data.skipped_basic_lands > 0) {
       const div = document.createElement("div");
-      div.className = "text-slate-500";
+      div.className = "text-slate-400";
       div.textContent = `(Skipped ${data.skipped_basic_lands} basic land row${data.skipped_basic_lands > 1 ? "s" : ""} — not tracked in collection inventory.)`;
       container.appendChild(div);
     }
@@ -1046,9 +1085,10 @@ function renderInventoryTable(cards) {
   }
   emptyMsg.classList.add("hidden");
 
-  cards.forEach((card) => {
+  cards.forEach((card, rowIndex) => {
     const tr = document.createElement("tr");
     tr.className = "border-b border-slate-800";
+    const printingsRowId = `manage-printings-row-${rowIndex}`;
 
     const deckTitle = card.decks.length
       ? card.decks.map((d) => `${d.quantity}x ${d.deck_name}`).join(", ")
@@ -1071,35 +1111,37 @@ function renderInventoryTable(cards) {
       ? `<span class="text-amber-400" title="Includes an estimated price — not a fetched price for a specific printing you own">*</span>`
       : "";
 
+    const cardNameAttr = escapeHtml(card.card_name);
     tr.innerHTML = `
       <td class="py-2 pr-2 align-top">
-        <button type="button" class="row-expand-btn w-5 h-5 flex items-center justify-center text-slate-500 hover:text-slate-200" title="Show printings">▸</button>
+        <button type="button" class="row-expand-btn w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-200"
+          title="Show printings" aria-label="Show printings for ${cardNameAttr}" aria-expanded="false" aria-controls="${printingsRowId}">▸</button>
       </td>
       <td class="py-2 pr-2">
         ${escapeHtml(card.card_name)}
-        ${card.decks.length ? `<span class="text-xs text-slate-500" title="${escapeHtml(deckTitle)}"> (in ${card.decks.length} deck${card.decks.length > 1 ? "s" : ""})</span>` : ""}
-        ${multiPrinting ? `<span class="text-xs text-slate-500"> · ${card.printing_count} printings</span>` : ""}
+        ${card.decks.length ? `<span class="text-xs text-slate-400" title="${escapeHtml(deckTitle)}"> (in ${card.decks.length} deck${card.decks.length > 1 ? "s" : ""})</span>` : ""}
+        ${multiPrinting ? `<span class="text-xs text-slate-400"> · ${card.printing_count} printings</span>` : ""}
         ${card.has_unresolved ? `<span class="text-xs text-amber-400" title="Has copies not yet assigned to a specific printing"> · unresolved</span>` : ""}
       </td>
       <td class="py-2 px-2">
         <div class="flex items-center gap-1">
-          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed" data-delta="-1" ${multiPrinting ? "disabled" : ""}>−</button>
-          <input type="number" min="0" value="${card.total_quantity}"
+          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed" data-delta="-1" aria-label="Decrease ${cardNameAttr} quantity" ${multiPrinting ? "disabled" : ""}>−</button>
+          <input type="number" min="0" value="${card.total_quantity}" aria-label="${cardNameAttr} quantity"
             class="qty-input w-14 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center disabled:opacity-50"
             ${multiPrinting ? "disabled" : ""}>
-          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed" data-delta="1" ${multiPrinting ? "disabled" : ""}>+</button>
+          <button class="qty-nudge w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed" data-delta="1" aria-label="Increase ${cardNameAttr} quantity" ${multiPrinting ? "disabled" : ""}>+</button>
         </div>
-        ${multiPrinting ? `<div class="text-[10px] text-slate-500 mt-1">expand to edit</div>` : ""}
+        ${multiPrinting ? `<div class="text-[10px] text-slate-400 mt-1">expand to edit</div>` : ""}
       </td>
       <td class="py-2 px-2 text-slate-400">${card.checked_out}</td>
-      <td class="py-2 px-2 ${card.available > 0 ? "text-emerald-400" : "text-slate-500"}">${card.available}</td>
+      <td class="py-2 px-2 ${card.available > 0 ? "text-emerald-400" : "text-slate-400"}">${card.available}</td>
       <td class="py-2 px-2 text-slate-300">${priceDisplay}${estimatedBadge}</td>
       <td class="py-2 px-2 text-slate-300">${valueDisplay}</td>
       <td class="py-2 px-2">
         <div class="flex gap-2">
           <button class="qty-save bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded text-xs" ${multiPrinting ? "disabled" : ""}>Save</button>
-          <button class="price-refresh bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded text-xs" title="Refresh this card's price" ${multiPrinting ? "disabled" : ""}>$</button>
-          <button class="card-delete bg-rose-900 hover:bg-rose-800 px-2 py-1 rounded text-xs" title="Delete this card and all its printings">Delete</button>
+          <button class="price-refresh bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded text-xs" title="Refresh this card's price" aria-label="Refresh ${cardNameAttr}'s price" ${multiPrinting ? "disabled" : ""}>$</button>
+          <button class="card-delete bg-rose-900 hover:bg-rose-800 px-2 py-1 rounded text-xs" title="Delete this card and all its printings" aria-label="Delete ${cardNameAttr} and all its printings">Delete</button>
         </div>
       </td>
     `;
@@ -1140,6 +1182,7 @@ function renderInventoryTable(cards) {
     // Printings breakdown, built from data already in `card` (no extra
     // fetch) and toggled via the expand button — hidden by default.
     const printingsTr = document.createElement("tr");
+    printingsTr.id = printingsRowId;
     printingsTr.className = "printings-row hidden border-b border-slate-800";
     const printingsTd = document.createElement("td");
     printingsTd.colSpan = 8;
@@ -1152,6 +1195,7 @@ function renderInventoryTable(cards) {
       const collapsed = printingsTr.classList.contains("hidden");
       printingsTr.classList.toggle("hidden");
       e.target.textContent = collapsed ? "▾" : "▸";
+      e.target.setAttribute("aria-expanded", collapsed ? "true" : "false");
     });
   });
 }
@@ -1163,12 +1207,12 @@ function renderPrintingsPanel(card) {
   table.className = "w-full text-xs mb-3";
   table.innerHTML = `
     <thead>
-      <tr class="text-left text-slate-500 border-b border-slate-800">
-        <th class="py-1 pr-2">Printing</th>
-        <th class="py-1 px-2 w-24">Quantity</th>
-        <th class="py-1 px-2 w-20">Price</th>
-        <th class="py-1 px-2 w-20">Value</th>
-        <th class="py-1 px-2 w-36">Actions</th>
+      <tr class="text-left text-slate-400 border-b border-slate-800">
+        <th scope="col" class="py-1 pr-2">Printing</th>
+        <th scope="col" class="py-1 px-2 w-24">Quantity</th>
+        <th scope="col" class="py-1 px-2 w-20">Price</th>
+        <th scope="col" class="py-1 px-2 w-20">Value</th>
+        <th scope="col" class="py-1 px-2 w-36">Actions</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -1186,21 +1230,25 @@ function renderPrintingsPanel(card) {
       ? `<span class="text-amber-400" title="Estimated — not a fetched price for this exact printing">*</span>`
       : "";
 
+    const printingLabelText = p.is_unresolved
+      ? `${escapeHtml(card.card_name)} unresolved copies`
+      : `${escapeHtml(card.card_name)} ${escapeHtml(p.set_code)} #${escapeHtml(p.collector_number)}`;
+
     const row = document.createElement("tr");
     row.className = "border-b border-slate-800/60";
     row.innerHTML = `
       <td class="py-1 pr-2">${label}</td>
       <td class="py-1 px-2">
-        <input type="number" min="0" value="${p.total_quantity}"
+        <input type="number" min="0" value="${p.total_quantity}" aria-label="Quantity for ${printingLabelText}"
           class="printing-qty-input w-16 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center">
       </td>
       <td class="py-1 px-2">${priceDisplay}${estimatedBadge}</td>
       <td class="py-1 px-2">${valueDisplay}</td>
       <td class="py-1 px-2">
         <div class="flex gap-1">
-          <button class="printing-save bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 rounded text-[11px]">Save</button>
-          <button class="printing-price-refresh bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded text-[11px]" title="Refresh this printing's price">$</button>
-          <button class="printing-delete bg-rose-900 hover:bg-rose-800 px-2 py-0.5 rounded text-[11px]">Delete</button>
+          <button class="printing-save bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 rounded text-[11px]" aria-label="Save quantity for ${printingLabelText}">Save</button>
+          <button class="printing-price-refresh bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded text-[11px]" title="Refresh this printing's price" aria-label="Refresh price for ${printingLabelText}">$</button>
+          <button class="printing-delete bg-rose-900 hover:bg-rose-800 px-2 py-0.5 rounded text-[11px]" aria-label="Delete ${printingLabelText}">Delete</button>
         </div>
       </td>
     `;
@@ -1232,15 +1280,15 @@ function renderPrintingsPanel(card) {
     fixup.innerHTML = `
       <div class="text-xs text-slate-400 mb-2">Assign unresolved copies to a printing</div>
       <div class="flex flex-wrap gap-2">
-        <input type="text" placeholder="Set" list="add-card-set-list"
+        <input type="text" placeholder="Set" list="add-card-set-list" aria-label="Set to assign unresolved ${escapeHtml(card.card_name)} copies to"
           class="fixup-set flex-1 min-w-[100px] bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
-        <input type="text" placeholder="Collector #"
+        <input type="text" placeholder="Collector #" aria-label="Collector number to assign unresolved ${escapeHtml(card.card_name)} copies to"
           class="fixup-number w-28 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
-        <input type="number" min="1" value="1" placeholder="Qty"
+        <input type="number" min="1" value="1" placeholder="Qty" aria-label="Quantity to assign"
           class="fixup-qty w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
         <button class="fixup-submit bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs font-medium">Assign</button>
       </div>
-      <div class="fixup-msg text-xs mt-2"></div>
+      <div class="fixup-msg text-xs mt-2" aria-live="polite"></div>
     `;
 
     fixup.querySelector(".fixup-submit").addEventListener("click", async () => {
@@ -1490,7 +1538,7 @@ function renderBulkInvResults(lines, warnings, skippedBasics) {
 
   if (skippedBasics > 0) {
     const div = document.createElement("div");
-    div.className = "text-slate-500";
+    div.className = "text-slate-400";
     div.textContent = `(Skipped ${skippedBasics} basic land line${skippedBasics > 1 ? "s" : ""}.)`;
     container.appendChild(div);
   }
@@ -1675,8 +1723,9 @@ function setFavoriteBtnState(isFavorite, disabled) {
   const favBtn = document.getElementById("deck-favorite-btn");
   favBtn.disabled = disabled;
   favBtn.dataset.favorite = isFavorite ? "true" : "false";
+  favBtn.setAttribute("aria-pressed", isFavorite ? "true" : "false");
   favBtn.classList.toggle("text-amber-400", isFavorite);
-  favBtn.classList.toggle("text-slate-500", !isFavorite);
+  favBtn.classList.toggle("text-slate-400", !isFavorite);
 }
 
 async function loadDeckFavoriteState(deckName) {
@@ -1765,8 +1814,10 @@ document.getElementById("deck-select").addEventListener("change", (e) => {
   }
 });
 
-document.getElementById("deck-bulk-toggle-btn").addEventListener("click", () => {
-  document.getElementById("deck-bulk-panel").classList.toggle("hidden");
+document.getElementById("deck-bulk-toggle-btn").addEventListener("click", (e) => {
+  const panel = document.getElementById("deck-bulk-panel");
+  panel.classList.toggle("hidden");
+  e.currentTarget.setAttribute("aria-expanded", panel.classList.contains("hidden") ? "false" : "true");
 });
 
 async function loadDeckContents(deckName) {
@@ -1804,7 +1855,7 @@ function renderDeckTable(deckName, cards) {
     // own +1/-1/Remove all act on exactly that printing (pinned),
     // never the name-wide pool.
     const printingLabel = card.set_code || card.collector_number
-      ? `<span class="text-xs text-slate-500"> (${escapeHtml(card.set_code)} #${escapeHtml(card.collector_number)})</span>`
+      ? `<span class="text-xs text-slate-400"> (${escapeHtml(card.set_code)} #${escapeHtml(card.collector_number)})</span>`
       : "";
 
     tr.innerHTML = `
@@ -2144,7 +2195,7 @@ document.getElementById("settings-change-password-btn").addEventListener("click"
 
 async function loadAdminUsersList() {
   const container = document.getElementById("settings-users-list");
-  container.innerHTML = `<div class="text-sm text-slate-500">Loading...</div>`;
+  container.innerHTML = `<div class="text-sm text-slate-400">Loading...</div>`;
 
   try {
     const res = await fetch(`${API_BASE}/admin/users`);

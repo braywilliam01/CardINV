@@ -29,6 +29,8 @@ def test_csv_import_with_set_and_number_columns(registered_client):
         {
             "set_code": "CLB",
             "collector_number": "141",
+            "finish": "",
+            "is_finish_unspecified": True,
             "total_quantity": 4,
             "is_unresolved": False,
             "price_usd": None,

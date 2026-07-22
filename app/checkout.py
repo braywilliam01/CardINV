@@ -55,28 +55,40 @@ def _draw_down_checkout(
     — see parser.py): draws only from that exact printing, no
     spillover — the user named a specific printing, so partial
     fulfillment from a *different* one would silently substitute
-    something they didn't ask for.
+    something they didn't ask for. Decklist text has no finish syntax
+    (see parser.py), so a pinned line always targets that printing's
+    unspecified-finish ("") row specifically — it will show 0
+    available if every copy of that printing happens to be in a
+    finish-resolved row instead, which is intentional (finish-pinning
+    isn't supported), not a bug.
 
     Unpinned: draws cheapest-known-price printing first, spilling into
     the next-cheapest if the first isn't enough (see
     availability.get_printing_availability) — protects more valuable
     printings from getting tied up in a deck for ordinary play copies.
+    Finish is just one more dimension of the rows iterated here; the
+    resulting DeckAssignment inherits whichever row's finish it was
+    actually drawn from.
 
-    `reserved` is a running per-printing claim guard, shared across
-    every line in one request, so two lines for the same card (e.g. a
-    pinned line and an unpinned line, or a typo'd duplicate) can't
-    double-claim the same copies.
+    `reserved` is a running per-printing-per-finish claim guard, shared
+    across every line in one request, so two lines for the same card
+    (e.g. a pinned line and an unpinned line, or a typo'd duplicate)
+    can't double-claim the same copies. Keyed the same 4-tuple shape
+    in both branches below (finish="" for the pinned case) so a pinned
+    claim and an unpinned draw that happens to land on the same row
+    can't silently bypass each other.
     """
     used: list[dict] = []
 
     if set_code or collector_number:
-        key = (card_name, set_code, collector_number)
+        key = (card_name, set_code, collector_number, "")
         inv = (
             db.query(Inventory)
             .filter(
                 Inventory.card_name == card_name,
                 Inventory.set_code == set_code,
                 Inventory.collector_number == collector_number,
+                Inventory.finish == "",
             )
             .one_or_none()
         )
@@ -87,6 +99,7 @@ def _draw_down_checkout(
                 DeckAssignment.card_name == card_name,
                 DeckAssignment.set_code == set_code,
                 DeckAssignment.collector_number == collector_number,
+                DeckAssignment.finish == "",
             )
             .scalar()
         )
@@ -94,7 +107,7 @@ def _draw_down_checkout(
         available = max(0, total - checked_out - already_claimed)
         take = min(available, qty)
         if take > 0:
-            _increment_assignment(db, card_name, deck_name, set_code, collector_number, take)
+            _increment_assignment(db, card_name, deck_name, set_code, collector_number, "", take)
             reserved[key] = already_claimed + take
             used.append({"set_code": set_code, "collector_number": collector_number, "quantity": take})
         return take, used
@@ -103,13 +116,13 @@ def _draw_down_checkout(
     for p in get_printing_availability(db, card_name):
         if remaining <= 0:
             break
-        key = (card_name, p.set_code, p.collector_number)
+        key = (card_name, p.set_code, p.collector_number, p.finish)
         already_claimed = reserved.get(key, 0)
         avail_here = max(0, p.available - already_claimed)
         if avail_here <= 0:
             continue
         take = min(avail_here, remaining)
-        _increment_assignment(db, card_name, deck_name, p.set_code, p.collector_number, take)
+        _increment_assignment(db, card_name, deck_name, p.set_code, p.collector_number, p.finish, take)
         reserved[key] = already_claimed + take
         used.append({"set_code": p.set_code, "collector_number": p.collector_number, "quantity": take})
         remaining -= take
@@ -122,14 +135,14 @@ def _draw_down_checkin(
     set_code: str, collector_number: str, already_returned: dict[tuple, int],
 ) -> tuple[int, list[dict]]:
     """Mirror of _draw_down_checkout for returning cards: pinned
-    targets that exact assignment row; unpinned returns the
-    cheapest-assigned printing first (see
-    availability.get_assigned_printings), keeping pricier printings in
-    the deck as long as possible."""
+    targets that exact assignment row (finish="", same reasoning as
+    _draw_down_checkout); unpinned returns the cheapest-assigned
+    printing first (see availability.get_assigned_printings), keeping
+    pricier printings in the deck as long as possible."""
     used: list[dict] = []
 
     if set_code or collector_number:
-        key = (card_name, set_code, collector_number)
+        key = (card_name, set_code, collector_number, "")
         assignment = (
             db.query(DeckAssignment)
             .filter(
@@ -137,6 +150,7 @@ def _draw_down_checkin(
                 DeckAssignment.deck_name == deck_name,
                 DeckAssignment.set_code == set_code,
                 DeckAssignment.collector_number == collector_number,
+                DeckAssignment.finish == "",
             )
             .one_or_none()
         )
@@ -145,7 +159,7 @@ def _draw_down_checkin(
         returnable = max(0, currently_assigned - already_claimed)
         take = min(returnable, qty)
         if take > 0:
-            _decrement_assignment(db, card_name, deck_name, set_code, collector_number, take)
+            _decrement_assignment(db, card_name, deck_name, set_code, collector_number, "", take)
             already_returned[key] = already_claimed + take
             used.append({"set_code": set_code, "collector_number": collector_number, "quantity": take})
         return take, used
@@ -154,13 +168,13 @@ def _draw_down_checkin(
     for p in get_assigned_printings(db, card_name, deck_name):
         if remaining <= 0:
             break
-        key = (card_name, p.set_code, p.collector_number)
+        key = (card_name, p.set_code, p.collector_number, p.finish)
         already_claimed = already_returned.get(key, 0)
         returnable = max(0, p.quantity - already_claimed)
         if returnable <= 0:
             continue
         take = min(returnable, remaining)
-        _decrement_assignment(db, card_name, deck_name, p.set_code, p.collector_number, take)
+        _decrement_assignment(db, card_name, deck_name, p.set_code, p.collector_number, p.finish, take)
         already_returned[key] = already_claimed + take
         used.append({"set_code": p.set_code, "collector_number": p.collector_number, "quantity": take})
         remaining -= take
@@ -202,7 +216,7 @@ def checkout_cards(
         if is_basic_land(parsed.card_name):
             canonical = canonical_basic_land_name(parsed.card_name)
             _increment_assignment(
-                db, canonical, deck_name, parsed.set_code, parsed.collector_number, parsed.quantity
+                db, canonical, deck_name, parsed.set_code, parsed.collector_number, "", parsed.quantity
             )
             any_change = True
             result.lines.append(
@@ -389,8 +403,33 @@ def _collect_sync_targets(
 
 
 def _current_assignments_by_printing(db: Session, card_name: str, deck_name: str) -> dict[tuple, int]:
+    """Pinned sync targets ("(SET) NUM" in decklist text) never
+    specify finish (decks stay finish-blind — see _draw_down_checkout),
+    so this only reflects each printing's unspecified-finish ("") row
+    — any finish-resolved DeckAssignment rows for this deck (created
+    via unpinned cheapest-first spillover into a finish-specific
+    Inventory row) are intentionally excluded from pinned-target
+    accounting; see _all_current_assignments for the unpinned pool,
+    which does need to count them."""
     return {
         (a.set_code, a.collector_number): a.quantity
+        for a in db.query(DeckAssignment)
+        .filter(
+            DeckAssignment.card_name == card_name,
+            DeckAssignment.deck_name == deck_name,
+            DeckAssignment.finish == "",
+        )
+        .all()
+    }
+
+
+def _all_current_assignments(db: Session, card_name: str, deck_name: str) -> dict[tuple, int]:
+    """Every current assignment row for (card_name, deck_name),
+    finish included — used for the unpinned "everything else" pool's
+    current-count, which (unlike a pinned target) has to count
+    finish-resolved rows too."""
+    return {
+        (a.set_code, a.collector_number, a.finish): a.quantity
         for a in db.query(DeckAssignment)
         .filter(DeckAssignment.card_name == card_name, DeckAssignment.deck_name == deck_name)
         .all()
@@ -398,6 +437,8 @@ def _current_assignments_by_printing(db: Session, card_name: str, deck_name: str
 
 
 def _printing_growable(db: Session, card_name: str, set_code: str, collector_number: str) -> int:
+    """How many more of a *pinned* printing (finish="", same reasoning
+    as _current_assignments_by_printing) could be checked out."""
     if is_basic_land(card_name):
         return 10**9
     inv = (
@@ -406,6 +447,7 @@ def _printing_growable(db: Session, card_name: str, set_code: str, collector_num
             Inventory.card_name == card_name,
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
+            Inventory.finish == "",
         )
         .one_or_none()
     )
@@ -416,6 +458,7 @@ def _printing_growable(db: Session, card_name: str, set_code: str, collector_num
             DeckAssignment.card_name == card_name,
             DeckAssignment.set_code == set_code,
             DeckAssignment.collector_number == collector_number,
+            DeckAssignment.finish == "",
         )
         .scalar()
     )
@@ -478,7 +521,7 @@ def sync_checkout(
                 ))
                 continue
 
-            _increment_assignment(db, card_name, deck_name, set_code, collector_number, delta)
+            _increment_assignment(db, card_name, deck_name, set_code, collector_number, "", delta)
             any_change = True
             lines.append(SyncLineResult(
                 card_name, current_qty, target_qty, delta, "ok",
@@ -486,8 +529,17 @@ def sync_checkout(
             ))
 
         # Step 2 — the unpinned "everything else" pool for this name.
+        # Only exclude the unspecified-finish row of a pinned printing
+        # (already handled in Step 1 above) — a finish-resolved row of
+        # that same printing (e.g. a Holofoil copy pulled in earlier by
+        # unpinned spillover) is still fair game for this pool, since
+        # pinning never specifies finish. Uses _all_current_assignments
+        # (not current_by_printing, which is finish=""-only) since this
+        # pool's current-count does need to include finish-resolved rows.
+        pinned_keys_with_finish = {(sc, cn, "") for (sc, cn) in entry["pinned"]}
+        all_current = _all_current_assignments(db, card_name, deck_name)
         other_current = sum(
-            qty for key, qty in current_by_printing.items() if key not in entry["pinned"]
+            qty for key, qty in all_current.items() if key not in pinned_keys_with_finish
         )
         target_qty = entry["unpinned"]
         delta = target_qty - other_current
@@ -497,12 +549,15 @@ def sync_checkout(
             continue
 
         if is_basic_land(card_name):
-            _increment_assignment(db, card_name, deck_name, "", "", delta)
+            _increment_assignment(db, card_name, deck_name, "", "", "", delta)
             any_change = True
             lines.append(SyncLineResult(card_name, other_current, target_qty, delta, "ok"))
             continue
 
-        eligible = [p for p in get_printing_availability(db, card_name) if (p.set_code, p.collector_number) not in entry["pinned"]]
+        eligible = [
+            p for p in get_printing_availability(db, card_name)
+            if (p.set_code, p.collector_number, p.finish) not in pinned_keys_with_finish
+        ]
         available = sum(p.available for p in eligible)
         if delta > available:
             message = f"Only {available} available — reaching {target_qty} needs {delta} more."
@@ -517,7 +572,7 @@ def sync_checkout(
             if p.available <= 0:
                 continue
             take = min(p.available, remaining)
-            _increment_assignment(db, card_name, deck_name, p.set_code, p.collector_number, take)
+            _increment_assignment(db, card_name, deck_name, p.set_code, p.collector_number, p.finish, take)
             remaining -= take
 
         any_change = True
@@ -585,15 +640,20 @@ def sync_checkin(
                 ))
                 continue
 
-            _decrement_assignment(db, card_name, deck_name, set_code, collector_number, delta)
+            _decrement_assignment(db, card_name, deck_name, set_code, collector_number, "", delta)
             any_change = True
             lines.append(SyncLineResult(
                 card_name, current_qty, target_qty, -delta, "ok",
                 set_code=set_code, collector_number=collector_number,
             ))
 
+        # See sync_checkout's Step 2 for why this uses
+        # _all_current_assignments (finish included) rather than
+        # current_by_printing (finish=""-only).
+        pinned_keys_with_finish = {(sc, cn, "") for (sc, cn) in entry["pinned"]}
+        all_current = _all_current_assignments(db, card_name, deck_name)
         other_current = sum(
-            qty for key, qty in current_by_printing.items() if key not in entry["pinned"]
+            qty for key, qty in all_current.items() if key not in pinned_keys_with_finish
         )
         target_qty = entry["unpinned"]
         delta = other_current - target_qty
@@ -606,12 +666,12 @@ def sync_checkin(
         for p in get_assigned_printings(db, card_name, deck_name):
             if remaining <= 0:
                 break
-            if (p.set_code, p.collector_number) in entry["pinned"]:
+            if (p.set_code, p.collector_number, p.finish) in pinned_keys_with_finish:
                 continue
             take = min(p.quantity, remaining)
             if take <= 0:
                 continue
-            _decrement_assignment(db, card_name, deck_name, p.set_code, p.collector_number, take)
+            _decrement_assignment(db, card_name, deck_name, p.set_code, p.collector_number, p.finish, take)
             remaining -= take
 
         any_change = True
@@ -633,12 +693,23 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
 
     Batches inventory totals and cross-deck checkout totals into two
     queries up front (keyed by this deck's card names) rather than
-    re-querying per row.
+    re-querying per row. Internally keyed including finish (so
+    available_more is computed against the *specific* row a copy was
+    drawn from, not conflated across finishes of the same printing)
+    even though finish isn't part of this function's output — the
+    Deck tab shows no finish UI (decks stay finish-blind), so two rows
+    for the same printing in different finishes render identically
+    here, which is expected, not a bug.
     """
     assignments = (
         db.query(DeckAssignment)
         .filter(DeckAssignment.deck_name == deck_name, DeckAssignment.quantity > 0)
-        .order_by(DeckAssignment.card_name.asc(), DeckAssignment.set_code.asc(), DeckAssignment.collector_number.asc())
+        .order_by(
+            DeckAssignment.card_name.asc(),
+            DeckAssignment.set_code.asc(),
+            DeckAssignment.collector_number.asc(),
+            DeckAssignment.finish.asc(),
+        )
         .all()
     )
 
@@ -648,13 +719,13 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
     card_names = list({a.card_name for a in assignments})
 
     inv_by_printing = {
-        (row.card_name, row.set_code, row.collector_number): row.total_quantity
+        (row.card_name, row.set_code, row.collector_number, row.finish): row.total_quantity
         for row in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all()
     }
 
     checked_out_by_printing: dict[tuple, int] = {}
     for a in db.query(DeckAssignment).filter(DeckAssignment.card_name.in_(card_names)).all():
-        key = (a.card_name, a.set_code, a.collector_number)
+        key = (a.card_name, a.set_code, a.collector_number, a.finish)
         checked_out_by_printing[key] = checked_out_by_printing.get(key, 0) + a.quantity
 
     result = []
@@ -670,7 +741,7 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
             })
             continue
 
-        key = (a.card_name, a.set_code, a.collector_number)
+        key = (a.card_name, a.set_code, a.collector_number, a.finish)
         total = inv_by_printing.get(key, 0)
         total_checked_out = checked_out_by_printing.get(key, 0)
         available_more = max(0, total - total_checked_out)
@@ -705,7 +776,7 @@ def _touch_deck(db: Session, deck_name: str) -> None:
 
 
 def _increment_assignment(
-    db: Session, card_name: str, deck_name: str, set_code: str, collector_number: str, qty: int
+    db: Session, card_name: str, deck_name: str, set_code: str, collector_number: str, finish: str, qty: int
 ) -> None:
     assignment = (
         db.query(DeckAssignment)
@@ -714,6 +785,7 @@ def _increment_assignment(
             DeckAssignment.deck_name == deck_name,
             DeckAssignment.set_code == set_code,
             DeckAssignment.collector_number == collector_number,
+            DeckAssignment.finish == finish,
         )
         .one_or_none()
     )
@@ -722,12 +794,12 @@ def _increment_assignment(
     else:
         db.add(DeckAssignment(
             card_name=card_name, deck_name=deck_name,
-            set_code=set_code, collector_number=collector_number, quantity=qty,
+            set_code=set_code, collector_number=collector_number, finish=finish, quantity=qty,
         ))
 
 
 def _decrement_assignment(
-    db: Session, card_name: str, deck_name: str, set_code: str, collector_number: str, qty: int
+    db: Session, card_name: str, deck_name: str, set_code: str, collector_number: str, finish: str, qty: int
 ) -> None:
     assignment = (
         db.query(DeckAssignment)
@@ -736,6 +808,7 @@ def _decrement_assignment(
             DeckAssignment.deck_name == deck_name,
             DeckAssignment.set_code == set_code,
             DeckAssignment.collector_number == collector_number,
+            DeckAssignment.finish == finish,
         )
         .one_or_none()
     )

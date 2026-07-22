@@ -129,3 +129,64 @@ def test_decklist_text_round_trips_through_checkout(registered_client):
     )
     assert r.status_code == 200, r.text
     assert all(l["status"] == "ok" for l in r.json()["lines"])
+
+
+# --- Finish (decks stay finish-blind -- see checkout.py's module-level
+# reasoning on _draw_down_checkout) --------------------------------------
+
+
+def test_pinned_checkout_only_targets_unspecified_finish_row(registered_client):
+    """A pinned "(SET) NUM" line always targets that printing's
+    unspecified-finish ("") row specifically -- if every copy of that
+    printing happens to be in a finish-resolved row instead, 0 are
+    available. Intentional (no finish-pinning syntax), not a bug."""
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 3, "set_code": "DAA", "collector_number": "10", "finish": "Holofoil"},
+    )
+
+    r = registered_client.post(
+        "/api/checkout", json={"decklist_text": "1 Charizard (DAA) 10", "deck_name": "Some Deck"}
+    )
+    assert r.status_code == 200, r.text
+    line = r.json()["lines"][0]
+    assert line["fulfilled_qty"] == 0
+    assert line["status"] == "not_found"
+
+
+def test_unpinned_checkout_spans_finish_rows_of_same_printing(registered_client):
+    """Unpinned draw-down treats finish as just one more dimension of
+    the rows it iterates -- requesting more than either single finish
+    row alone can supply forces it to pull from both."""
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 1, "set_code": "DAA", "collector_number": "10", "finish": "Holofoil"},
+    )
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 1, "set_code": "DAA", "collector_number": "10", "finish": "Reverse Holofoil"},
+    )
+
+    r = registered_client.post(
+        "/api/checkout", json={"decklist_text": "2 Charizard", "deck_name": "Some Deck"}
+    )
+    assert r.status_code == 200, r.text
+    line = r.json()["lines"][0]
+    assert line["fulfilled_qty"] == 2  # drew from both finish rows -- 1 each, only 1 of each exists
+
+
+def test_checked_in_assignment_retains_drawn_finish(registered_client):
+    """A copy drawn from a finish-resolved row during unpinned
+    checkout should return to *that same* row on checkin, not get
+    reclassified as unspecified-finish."""
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 2, "set_code": "DAA", "collector_number": "10", "finish": "Holofoil"},
+    )
+    registered_client.post("/api/checkout", json={"decklist_text": "1 Charizard", "deck_name": "Some Deck"})
+    registered_client.post("/api/checkin", json={"decklist_text": "1 Charizard", "deck_name": "Some Deck"})
+
+    printings = registered_client.get("/api/inventory/printings", params={"card_name": "Charizard"}).json()["printings"]
+    assert len(printings) == 1
+    assert printings[0]["finish"] == "Holofoil"
+    assert printings[0]["total_quantity"] == 2  # fully returned to the same row it came from

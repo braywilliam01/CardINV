@@ -6,6 +6,7 @@ from .models import Inventory, DeckAssignment, CardPrice
 from .parser import parse_decklist
 from .fuzzy import find_best_match
 from .constants import is_basic_land
+from .finishes import normalize_finish
 
 # Fixed high-confidence threshold for bulk add/remove — these are direct
 # inventory edits (not deck-list matching against a big fuzzy pool), so
@@ -28,21 +29,26 @@ class DeckHold:
 
 @dataclass
 class PrintingRow:
-    """One (set_code, collector_number) row for a card name. Both
-    fields empty together means 'unresolved' — quantity not yet tied
-    to a specific printing. No checked_out/available here: deck
-    assignments aren't printing-specific yet (that's a later phase),
-    so availability is only meaningful at the card-name level — see
-    InventoryRow. price_usd/price_usd_foil/is_estimated mirror
-    CardPrice for this exact printing — is_estimated means the price
-    is a stand-in (cheapest known printing, or Scryfall/TCGdex's own
-    best-guess name match) rather than a fetch for this specific
-    printing; see price_estimation.py.
+    """One (set_code, collector_number, finish) row for a card name.
+    set_code/collector_number both empty means 'unresolved' (quantity
+    not yet tied to a specific printing); finish empty means
+    'unspecified' (printing may be known, but which finish these
+    copies are isn't) -- see models.py's Inventory docstring for why
+    these are two independent axes, not one. No checked_out/available
+    here: deck assignments aren't printing-specific yet (that's a
+    later phase), so availability is only meaningful at the card-name
+    level — see InventoryRow. price_usd/price_usd_foil/is_estimated
+    mirror CardPrice for this exact printing/finish — is_estimated
+    means the price is a stand-in (cheapest known printing, or
+    Scryfall/TCGdex's own best-guess name match) rather than a fetch
+    for this specific printing; see price_estimation.py.
     """
     set_code: str
     collector_number: str
+    finish: str
     total_quantity: int
     is_unresolved: bool
+    is_finish_unspecified: bool
     price_usd: float | None = None
     price_usd_foil: float | None = None
     is_estimated: bool = False
@@ -95,11 +101,14 @@ class BlockedDeleteError(Exception):
 
 
 class DuplicateCardError(Exception):
-    def __init__(self, card_name: str, set_code: str = "", collector_number: str = ""):
+    def __init__(self, card_name: str, set_code: str = "", collector_number: str = "", finish: str = ""):
         self.card_name = card_name
         self.set_code = set_code
         self.collector_number = collector_number
+        self.finish = finish
         printing = f"{set_code} #{collector_number}".strip(" #") if (set_code or collector_number) else "unresolved printing"
+        if finish:
+            printing = f"{printing}, {finish}"
         super().__init__(
             f"'{card_name}' ({printing}) already exists in inventory — "
             f"use the edit action to adjust its quantity."
@@ -128,8 +137,10 @@ def _to_printing_row(inv: Inventory, price: CardPrice | None) -> PrintingRow:
     return PrintingRow(
         set_code=inv.set_code,
         collector_number=inv.collector_number,
+        finish=inv.finish,
         total_quantity=inv.total_quantity,
         is_unresolved=(inv.set_code == "" and inv.collector_number == ""),
+        is_finish_unspecified=(inv.finish == ""),
         price_usd=price_usd,
         price_usd_foil=price_usd_foil,
         is_estimated=price.is_estimated if price else False,
@@ -154,19 +165,23 @@ def _aggregate_pricing(printing_rows: list[PrintingRow]) -> tuple[float | None, 
 def get_printings_for_card(db: Session, card_name: str) -> list[PrintingRow]:
     """Every printing row for one card name, for the fix-up modal /
     expanded row view. Ordered with the unresolved bucket first (it's
-    the one you're usually trying to resolve), then by set/number."""
+    the one you're usually trying to resolve), then by set/number,
+    then by finish (so a printing's finishes group together as
+    sub-rows under it)."""
     rows = (
         db.query(Inventory)
         .filter(Inventory.card_name == card_name)
         .all()
     )
-    rows.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
+    rows.sort(
+        key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+    )
 
     price_by_key = {
-        (p.set_code, p.collector_number): p
+        (p.set_code, p.collector_number, p.finish): p
         for p in db.query(CardPrice).filter(CardPrice.card_name == card_name).all()
     }
-    return [_to_printing_row(r, price_by_key.get((r.set_code, r.collector_number))) for r in rows]
+    return [_to_printing_row(r, price_by_key.get((r.set_code, r.collector_number, r.finish))) for r in rows]
 
 
 def build_group_row(db: Session, card_name: str) -> InventoryRow:
@@ -272,6 +287,7 @@ def list_inventory(
                 Inventory.card_name == CardPrice.card_name,
                 Inventory.set_code == CardPrice.set_code,
                 Inventory.collector_number == CardPrice.collector_number,
+                Inventory.finish == CardPrice.finish,
             ),
         )
         .filter(CardPrice.price_usd.isnot(None))
@@ -334,7 +350,7 @@ def list_inventory(
     printing_map: dict[str, list[Inventory]] = {}
     if card_names:
         price_map = {
-            (p.card_name, p.set_code, p.collector_number): p
+            (p.card_name, p.set_code, p.collector_number, p.finish): p
             for p in db.query(CardPrice).filter(CardPrice.card_name.in_(card_names)).all()
         }
         for card_name, deck_name, total in (
@@ -353,9 +369,11 @@ def list_inventory(
     result = []
     for card_name in card_names:
         printings = printing_map.get(card_name, [])
-        printings.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
+        printings.sort(
+            key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+        )
         printing_rows = [
-            _to_printing_row(p, price_map.get((card_name, p.set_code, p.collector_number)))
+            _to_printing_row(p, price_map.get((card_name, p.set_code, p.collector_number, p.finish)))
             for p in printings
         ]
         total_quantity = sum(p.total_quantity for p in printing_rows)
@@ -384,22 +402,30 @@ def list_inventory(
 
 
 def add_card(
-    db: Session, card_name: str, total_quantity: int, set_code: str = "", collector_number: str = ""
+    db: Session,
+    card_name: str,
+    total_quantity: int,
+    set_code: str = "",
+    collector_number: str = "",
+    finish: str = "",
 ) -> InventoryRow:
     """
-    Creates one printing row: (card_name, set_code, collector_number).
-    Leaving set_code/collector_number blank creates/targets the
-    'unresolved' bucket for that name — the same behavior as before
-    per-printing tracking existed. Blocks case-insensitive exact
-    duplicates of the same printing (not the same fuzzy-match
-    threshold as bulk_add_cards/add_one_copy: a fuzzy threshold that's
-    fine when the worst case is "merges into the closest match" is too
-    aggressive once the action is "block card creation entirely" —
-    plenty of distinct real card names are only a few characters
-    apart and would otherwise get wrongly rejected).
+    Creates one printing row: (card_name, set_code, collector_number,
+    finish). Leaving set_code/collector_number blank creates/targets
+    the 'unresolved' bucket for that name; leaving finish blank
+    creates/targets the 'unspecified' finish for whatever printing was
+    given — the same behavior as before per-printing tracking existed,
+    extended with one more independent axis. Blocks case-insensitive
+    exact duplicates of the same printing+finish (not the same
+    fuzzy-match threshold as bulk_add_cards/add_one_copy: a fuzzy
+    threshold that's fine when the worst case is "merges into the
+    closest match" is too aggressive once the action is "block card
+    creation entirely" — plenty of distinct real card names are only a
+    few characters apart and would otherwise get wrongly rejected).
     """
     card_name = card_name.strip()
     set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
     if not card_name:
         raise ValueError("Card name cannot be empty.")
     if total_quantity < 0:
@@ -411,17 +437,19 @@ def add_card(
             Inventory.card_name.ilike(card_name),
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
         )
         .one_or_none()
     )
     if existing:
-        raise DuplicateCardError(existing.card_name, set_code, collector_number)
+        raise DuplicateCardError(existing.card_name, set_code, collector_number, finish)
 
     db.add(
         Inventory(
             card_name=card_name,
             set_code=set_code,
             collector_number=collector_number,
+            finish=finish,
             total_quantity=total_quantity,
         )
     )
@@ -431,15 +459,19 @@ def add_card(
 
 
 def get_owned_quantity(
-    db: Session, card_name: str, set_code: str = "", collector_number: str = ""
+    db: Session, card_name: str, set_code: str = "", collector_number: str = "", finish: str | None = None
 ) -> int:
     """
     Fuzzy-matches card_name against inventory (same threshold as bulk
-    add/remove). If set_code/collector_number are given, returns just
-    that printing's quantity (0 if that exact printing isn't owned,
-    even if other printings of the name are). Otherwise returns the
-    total across every printing of the name. Powers Card Search's
-    '# in inventory' figure.
+    add/remove). If set_code/collector_number are given, returns that
+    printing's quantity — summed across every finish, unless `finish`
+    is also given (a real value or explicitly ""), in which case it
+    returns just that one finish's quantity. Without set_code/
+    collector_number, returns the total across every printing and
+    finish of the name. Powers Card Search's '# in inventory' figure,
+    which shows "how many of this printing, in any finish, do I own"
+    since Card Search doesn't know which finish the user's copies are
+    until they've actually been added with one.
     """
     all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
     matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
@@ -448,16 +480,14 @@ def get_owned_quantity(
 
     set_code, collector_number = _norm_printing(set_code, collector_number)
     if set_code or collector_number:
-        inv = (
-            db.query(Inventory)
-            .filter(
-                Inventory.card_name == matched_name,
-                Inventory.set_code == set_code,
-                Inventory.collector_number == collector_number,
-            )
-            .one_or_none()
+        query = db.query(func.coalesce(func.sum(Inventory.total_quantity), 0)).filter(
+            Inventory.card_name == matched_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
         )
-        return inv.total_quantity if inv else 0
+        if finish is not None:
+            query = query.filter(Inventory.finish == normalize_finish(finish))
+        return query.scalar()
 
     total = (
         db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
@@ -468,20 +498,24 @@ def get_owned_quantity(
 
 
 def add_one_copy(
-    db: Session, card_name: str, set_code: str = "", collector_number: str = ""
+    db: Session, card_name: str, set_code: str = "", collector_number: str = "", finish: str = ""
 ) -> InventoryRow:
     """
-    Increments one exact printing row by one (fuzzy-matching only the
-    card name, to avoid creating "Sol Ring" vs "sol ring" duplicates),
-    creating that printing row with quantity 1 if it doesn't exist yet.
-    Powers Card Search's "Add to Inventory" button — always adds
+    Increments one exact printing+finish row by one (fuzzy-matching
+    only the card name, to avoid creating "Sol Ring" vs "sol ring"
+    duplicates), creating that row with quantity 1 if it doesn't exist
+    yet. Powers Card Search's "Add to Inventory" button — always adds
     exactly one copy per click. When Card Search knows the exact
     printing (set_code/collector_number from the lookup result), that's
     what gets incremented; otherwise it falls back to the unresolved
-    bucket, same as before per-printing tracking existed.
+    bucket, same as before per-printing tracking existed. finish
+    defaults to "" (unspecified) the same way — only set when the
+    caller actually knows which finish this copy is (e.g. a specific
+    price-variant "Add" action).
     """
     card_name = card_name.strip()
     set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
 
     all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
     matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
@@ -493,12 +527,17 @@ def add_one_copy(
             Inventory.card_name == target_name,
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
         )
         .one_or_none()
     )
     if inv is None:
         inv = Inventory(
-            card_name=target_name, set_code=set_code, collector_number=collector_number, total_quantity=0
+            card_name=target_name,
+            set_code=set_code,
+            collector_number=collector_number,
+            finish=finish,
+            total_quantity=0,
         )
         db.add(inv)
     inv.total_quantity += 1
@@ -508,27 +547,63 @@ def add_one_copy(
 
 
 def assign_printing(
-    db: Session, card_name: str, quantity: int, set_code: str, collector_number: str
+    db: Session,
+    card_name: str,
+    quantity: int,
+    set_code: str,
+    collector_number: str,
+    finish: str = "",
+    *,
+    from_finish: str | None = None,
 ) -> InventoryRow:
     """
-    The fix-up workflow: moves `quantity` copies of card_name out of
-    the unresolved ('', '') bucket and into the (set_code,
-    collector_number) printing, creating that printing row if it
-    doesn't exist yet. Never changes the card's total_quantity — this
-    only reclassifies which printing bucket the copies live in.
+    The fix-up workflow: moves `quantity` copies of card_name out of a
+    source row and into the (set_code, collector_number, finish)
+    target row, creating the target if it doesn't exist yet. Never
+    changes the card's total_quantity — this only reclassifies which
+    printing/finish bucket the copies live in.
+
+    Two use cases share this one function:
+    - Resolving a whole printing (the original, still-default case):
+      target is a real (set_code, collector_number); source is the
+      fully unresolved ("", "", "") bucket. finish on the target
+      defaults to "" too — "resolve the printing, leave finish
+      unspecified for now" is a valid intermediate state.
+    - Resolving just a finish on an already-printing-resolved row:
+      caller passes from_finish explicitly (typically "", the
+      unspecified finish) with the SAME set_code/collector_number as
+      the target — source is (set_code, collector_number, from_finish).
+
+    from_finish=None (the default) means "source from the fully
+    unresolved bucket", i.e. the original behavior, unchanged unless
+    the caller opts into the finish-only-reassignment case.
     """
     set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
     if not set_code and not collector_number:
         raise ValueError("Set and/or collector number is required to resolve a printing.")
     if quantity <= 0:
         raise ValueError("Quantity must be positive.")
 
-    unresolved = (
+    if from_finish is None:
+        source_set, source_number, source_finish = "", "", ""
+    else:
+        source_set, source_number, source_finish = set_code, collector_number, normalize_finish(from_finish)
+
+    if (source_set, source_number, source_finish) == (set_code, collector_number, finish):
+        raise ValueError("Source and target printing/finish are the same — nothing to assign.")
+
+    source = (
         db.query(Inventory)
-        .filter(Inventory.card_name == card_name, Inventory.set_code == "", Inventory.collector_number == "")
+        .filter(
+            Inventory.card_name == card_name,
+            Inventory.set_code == source_set,
+            Inventory.collector_number == source_number,
+            Inventory.finish == source_finish,
+        )
         .one_or_none()
     )
-    available = unresolved.total_quantity if unresolved else 0
+    available = source.total_quantity if source else 0
     if quantity > available:
         raise ValueError(
             f"Only {available} unresolved cop{'y' if available == 1 else 'ies'} of "
@@ -541,16 +616,21 @@ def assign_printing(
             Inventory.card_name == card_name,
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
         )
         .one_or_none()
     )
     if target is None:
         target = Inventory(
-            card_name=card_name, set_code=set_code, collector_number=collector_number, total_quantity=0
+            card_name=card_name,
+            set_code=set_code,
+            collector_number=collector_number,
+            finish=finish,
+            total_quantity=0,
         )
         db.add(target)
 
-    unresolved.total_quantity -= quantity
+    source.total_quantity -= quantity
     target.total_quantity += quantity
     db.commit()
 
@@ -563,21 +643,24 @@ def adjust_quantity(
     new_total_quantity: int,
     set_code: str = "",
     collector_number: str = "",
+    finish: str = "",
 ) -> InventoryRow:
     """
-    Sets one printing row's total_quantity directly (used for both
-    +/- nudges and manual edits from the UI — the frontend computes
-    the new absolute value). Blocked if it would drop the *card's*
-    total (this printing plus every other printing of the same name)
-    below what's currently checked out across decks — deck assignments
-    aren't printing-specific yet, so availability is only meaningful at
-    the whole-card level. No force option: reducing inventory below
-    what's checked out always requires checking cards in first.
+    Sets one printing+finish row's total_quantity directly (used for
+    both +/- nudges and manual edits from the UI — the frontend
+    computes the new absolute value). Blocked if it would drop the
+    *card's* total (this row plus every other printing/finish row of
+    the same name) below what's currently checked out across decks —
+    deck assignments aren't printing-specific yet, so availability is
+    only meaningful at the whole-card level. No force option: reducing
+    inventory below what's checked out always requires checking cards
+    in first.
     """
     if new_total_quantity < 0:
         raise ValueError("Quantity cannot be negative.")
 
     set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
 
     inv = (
         db.query(Inventory)
@@ -585,6 +668,7 @@ def adjust_quantity(
             Inventory.card_name == card_name,
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
         )
         .one_or_none()
     )
@@ -598,7 +682,11 @@ def adjust_quantity(
         db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
         .filter(
             Inventory.card_name == card_name,
-            ~((Inventory.set_code == set_code) & (Inventory.collector_number == collector_number)),
+            ~(
+                (Inventory.set_code == set_code)
+                & (Inventory.collector_number == collector_number)
+                & (Inventory.finish == finish)
+            ),
         )
         .scalar()
     )
@@ -613,17 +701,23 @@ def adjust_quantity(
 
 
 def delete_card(
-    db: Session, card_name: str, set_code: str = "", collector_number: str = "", force: bool = False
+    db: Session,
+    card_name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    finish: str = "",
+    force: bool = False,
 ) -> None:
     """
-    Removes one printing row. Blocked by default only if removing it
-    would drop the card's total below what's checked out across decks
-    (i.e. the other printings alone can't cover it) — raises
+    Removes one printing+finish row. Blocked by default only if
+    removing it would drop the card's total below what's checked out
+    across decks (i.e. the other rows alone can't cover it) — raises
     BlockedDeleteError so the caller can surface a 409 with the deck
     breakdown and let the user confirm. With force=True, deletes the
     deck_assignments too in that case.
     """
     set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
 
     inv = (
         db.query(Inventory)
@@ -631,6 +725,7 @@ def delete_card(
             Inventory.card_name == card_name,
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
         )
         .one_or_none()
     )
@@ -644,7 +739,11 @@ def delete_card(
         db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
         .filter(
             Inventory.card_name == card_name,
-            ~((Inventory.set_code == set_code) & (Inventory.collector_number == collector_number)),
+            ~(
+                (Inventory.set_code == set_code)
+                & (Inventory.collector_number == collector_number)
+                & (Inventory.finish == finish)
+            ),
         )
         .scalar()
     )
@@ -654,13 +753,14 @@ def delete_card(
         raise BlockedDeleteError(card_name, decks)
     if would_shortfall and force:
         # Deck assignments are printing-concrete (see models.py) — only
-        # the ones actually pinned to *this* printing become invalid;
-        # assignments drawn from other printings, or the unresolved
-        # bucket, are untouched.
+        # the ones actually pinned to *this* printing+finish become
+        # invalid; assignments drawn from other printings/finishes, or
+        # the unresolved bucket, are untouched.
         db.query(DeckAssignment).filter(
             DeckAssignment.card_name == card_name,
             DeckAssignment.set_code == set_code,
             DeckAssignment.collector_number == collector_number,
+            DeckAssignment.finish == finish,
         ).delete()
 
     db.delete(inv)
@@ -755,7 +855,12 @@ def bulk_add_cards(
 
         inv = (
             db.query(Inventory)
-            .filter(Inventory.card_name == matched_name, Inventory.set_code == "", Inventory.collector_number == "")
+            .filter(
+                Inventory.card_name == matched_name,
+                Inventory.set_code == "",
+                Inventory.collector_number == "",
+                Inventory.finish == "",
+            )
             .one_or_none()
         )
         if inv is None:
@@ -817,7 +922,9 @@ def bulk_remove_cards(
             continue
 
         printings = db.query(Inventory).filter(Inventory.card_name == matched_name).all()
-        printings.sort(key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number))
+        printings.sort(
+            key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+        )
         group_total = sum(p.total_quantity for p in printings)
 
         decks = _decks_for(db, matched_name)

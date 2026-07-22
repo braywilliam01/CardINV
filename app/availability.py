@@ -49,6 +49,7 @@ def get_available_quantity(db: Session, card_name: str, reserved: dict[str, int]
 class PrintingAvailability:
     set_code: str
     collector_number: str
+    finish: str
     available: int
     price_usd: float | None  # None sorts last — see get_printing_availability
 
@@ -60,36 +61,37 @@ def _cheapest_first(rows):
 
 def get_printing_availability(db: Session, card_name: str) -> list[PrintingAvailability]:
     """
-    Every printing of card_name with how many copies of *that exact
-    printing* are still available (its own Inventory total minus
-    what's already checked out from that same printing across every
-    deck), ordered cheapest-known-price first and unpriced printings
-    last.
+    Every printing (and finish) of card_name with how many copies of
+    *that exact row* are still available (its own Inventory total
+    minus what's already checked out from that same row across every
+    deck), ordered cheapest-known-price first and unpriced rows last.
 
     This is the draw-down order checkout.py uses for an *unpinned*
     line (no "(SET) NUM" in the pasted text — see parser.py): pull
     from the cheapest copies first, so more valuable printings stay on
     the shelf rather than getting tied up in a deck. A pinned line
-    skips this entirely and targets one printing directly.
+    skips this entirely and targets one printing directly (see
+    checkout.py — pinning still doesn't specify finish, so it only
+    ever targets the unspecified-finish row of that printing).
     """
     inv_rows = db.query(Inventory).filter(Inventory.card_name == card_name).all()
     if not inv_rows:
         return []
 
     checked_out_by_printing = {
-        (set_code, collector_number): qty
-        for set_code, collector_number, qty in (
+        (set_code, collector_number, finish): qty
+        for set_code, collector_number, finish, qty in (
             db.query(
-                DeckAssignment.set_code, DeckAssignment.collector_number,
+                DeckAssignment.set_code, DeckAssignment.collector_number, DeckAssignment.finish,
                 func.sum(DeckAssignment.quantity),
             )
             .filter(DeckAssignment.card_name == card_name)
-            .group_by(DeckAssignment.set_code, DeckAssignment.collector_number)
+            .group_by(DeckAssignment.set_code, DeckAssignment.collector_number, DeckAssignment.finish)
             .all()
         )
     }
     price_by_printing = {
-        (p.set_code, p.collector_number): p.price_usd
+        (p.set_code, p.collector_number, p.finish): p.price_usd
         for p in db.query(CardPrice).filter(CardPrice.card_name == card_name).all()
     }
 
@@ -97,8 +99,13 @@ def get_printing_availability(db: Session, card_name: str) -> list[PrintingAvail
         PrintingAvailability(
             set_code=inv.set_code,
             collector_number=inv.collector_number,
-            available=max(0, inv.total_quantity - checked_out_by_printing.get((inv.set_code, inv.collector_number), 0)),
-            price_usd=price_by_printing.get((inv.set_code, inv.collector_number)),
+            finish=inv.finish,
+            available=max(
+                0,
+                inv.total_quantity
+                - checked_out_by_printing.get((inv.set_code, inv.collector_number, inv.finish), 0),
+            ),
+            price_usd=price_by_printing.get((inv.set_code, inv.collector_number, inv.finish)),
         )
         for inv in inv_rows
     ]
@@ -109,18 +116,19 @@ def get_printing_availability(db: Session, card_name: str) -> list[PrintingAvail
 class AssignedPrinting:
     set_code: str
     collector_number: str
+    finish: str
     quantity: int
     price_usd: float | None  # None sorts last — see get_printing_availability
 
 
 def get_assigned_printings(db: Session, card_name: str, deck_name: str) -> list[AssignedPrinting]:
     """
-    Every printing of card_name currently assigned to deck_name (with
-    quantity > 0), ordered cheapest-known-price first — the drawn-from
-    order checkout.py uses for an *unpinned* checkin line: return the
-    least valuable copies to the shelf first, keeping pricier printings
-    in the deck as long as possible (the mirror image of
-    get_printing_availability's checkout-time rule).
+    Every printing (and finish) of card_name currently assigned to
+    deck_name (with quantity > 0), ordered cheapest-known-price first
+    — the drawn-from order checkout.py uses for an *unpinned* checkin
+    line: return the least valuable copies to the shelf first, keeping
+    pricier printings in the deck as long as possible (the mirror
+    image of get_printing_availability's checkout-time rule).
     """
     rows = (
         db.query(DeckAssignment)
@@ -135,7 +143,7 @@ def get_assigned_printings(db: Session, card_name: str, deck_name: str) -> list[
         return []
 
     price_by_printing = {
-        (p.set_code, p.collector_number): p.price_usd
+        (p.set_code, p.collector_number, p.finish): p.price_usd
         for p in db.query(CardPrice).filter(CardPrice.card_name == card_name).all()
     }
 
@@ -143,8 +151,9 @@ def get_assigned_printings(db: Session, card_name: str, deck_name: str) -> list[
         AssignedPrinting(
             set_code=r.set_code,
             collector_number=r.collector_number,
+            finish=r.finish,
             quantity=r.quantity,
-            price_usd=price_by_printing.get((r.set_code, r.collector_number)),
+            price_usd=price_by_printing.get((r.set_code, r.collector_number, r.finish)),
         )
         for r in rows
     ]

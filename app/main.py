@@ -70,6 +70,7 @@ from .card_lookup import lookup_card, record_card_view, get_recent_cards
 from .pokemon_lookup import lookup_card as pokemon_lookup_card
 from .pokemon_common import PokemonRateLimitError
 from .sets_cache import search_sets
+from .finishes import FINISHES_BY_GAME
 
 app = FastAPI(
     title="MTG Inventory Manager",
@@ -251,6 +252,15 @@ def get_sets_endpoint(q: str = "", game: str = Depends(get_current_game)):
     """Set autocomplete for the current game — backs the Set field on
     Manage Collection's 'Add a card' form and the fix-up workflow."""
     return {"sets": search_sets(game, q)}
+
+
+@app.get("/api/finishes")
+def get_finishes_endpoint(game: str = Depends(get_current_game)):
+    """Finish vocabulary for the current game — backs the finish
+    picker on Card Search's per-variant Add actions, Manage
+    Collection's manual Add/fix-up forms, and the deck Add-card form's
+    finish field."""
+    return {"finishes": FINISHES_BY_GAME.get(game, [])}
 
 
 class ChangePasswordRequest(BaseModel):
@@ -584,6 +594,7 @@ class AddCardRequest(BaseModel):
     total_quantity: int
     set_code: str = ""
     collector_number: str = ""
+    finish: str = ""
 
 
 class AdjustQuantityRequest(BaseModel):
@@ -591,6 +602,7 @@ class AdjustQuantityRequest(BaseModel):
     total_quantity: int
     set_code: str = ""
     collector_number: str = ""
+    finish: str = ""
 
 
 class AssignPrintingRequest(BaseModel):
@@ -598,12 +610,16 @@ class AssignPrintingRequest(BaseModel):
     quantity: int
     set_code: str
     collector_number: str
+    finish: str = ""
+    from_finish: str | None = None
 
 
 def _printing_to_dict(p):
     return {
         "set_code": p.set_code,
         "collector_number": p.collector_number,
+        "finish": p.finish,
+        "is_finish_unspecified": p.is_finish_unspecified,
         "total_quantity": p.total_quantity,
         "is_unresolved": p.is_unresolved,
         "price_usd": p.price_usd,
@@ -688,7 +704,7 @@ def get_inventory_names(db: Session = Depends(get_db)):
 @app.post("/api/inventory")
 def create_card(req: AddCardRequest, db: Session = Depends(get_db)):
     try:
-        row = add_card(db, req.card_name, req.total_quantity, req.set_code, req.collector_number)
+        row = add_card(db, req.card_name, req.total_quantity, req.set_code, req.collector_number, req.finish)
     except DuplicateCardError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -714,11 +730,17 @@ def get_card_printings(card_name: str, db: Session = Depends(get_db)):
 
 @app.post("/api/inventory/assign-printing")
 def assign_printing_endpoint(req: AssignPrintingRequest, db: Session = Depends(get_db)):
-    """Fix-up workflow: moves `quantity` copies of card_name out of the
-    unresolved bucket and into a specific (set_code, collector_number)
-    printing."""
+    """Fix-up workflow: moves `quantity` copies of card_name out of a
+    source row and into a specific (set_code, collector_number, finish)
+    row — either resolving a whole printing (source defaults to the
+    fully unresolved bucket) or, with from_finish given, resolving
+    just a finish on an already-printing-resolved row. See
+    inventory_admin.assign_printing."""
     try:
-        row = assign_printing(db, req.card_name, req.quantity, req.set_code, req.collector_number)
+        row = assign_printing(
+            db, req.card_name, req.quantity, req.set_code, req.collector_number,
+            req.finish, from_finish=req.from_finish,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _row_to_dict(row)
@@ -726,11 +748,13 @@ def assign_printing_endpoint(req: AssignPrintingRequest, db: Session = Depends(g
 
 @app.patch("/api/inventory")
 def update_card_quantity(req: AdjustQuantityRequest, db: Session = Depends(get_db)):
-    """Sets one printing's total_quantity — set_code/collector_number
-    default to the unresolved bucket, which is also the only printing
-    a simple (not-yet-expanded) card has."""
+    """Sets one printing's total_quantity — set_code/collector_number/
+    finish default to the unresolved/unspecified bucket, which is also
+    the only row a simple (not-yet-expanded) card has."""
     try:
-        row = adjust_quantity(db, req.card_name, req.total_quantity, req.set_code, req.collector_number)
+        row = adjust_quantity(
+            db, req.card_name, req.total_quantity, req.set_code, req.collector_number, req.finish
+        )
     except BlockedDeleteError as e:
         raise HTTPException(
             status_code=409,
@@ -769,12 +793,15 @@ def remove_card_printing(
     card_name: str,
     set_code: str = "",
     collector_number: str = "",
+    finish: str = "",
     force: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Deletes just one printing row — used from the expanded per-printing view."""
+    """Deletes just one printing+finish row — used from the expanded per-printing view."""
     try:
-        delete_card(db, card_name, set_code=set_code, collector_number=collector_number, force=force)
+        delete_card(
+            db, card_name, set_code=set_code, collector_number=collector_number, finish=finish, force=force
+        )
     except BlockedDeleteError as e:
         raise HTTPException(
             status_code=409,
@@ -785,7 +812,13 @@ def remove_card_printing(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"deleted": card_name, "set_code": set_code, "collector_number": collector_number, "force": force}
+    return {
+        "deleted": card_name,
+        "set_code": set_code,
+        "collector_number": collector_number,
+        "finish": finish,
+        "force": force,
+    }
 
 
 class BulkInventoryRequest(BaseModel):

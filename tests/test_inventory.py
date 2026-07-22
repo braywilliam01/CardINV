@@ -146,6 +146,8 @@ def test_quick_add_carries_over_known_price(registered_client):
         {
             "set_code": "CLB",
             "collector_number": "304",
+            "finish": "",
+            "is_finish_unspecified": True,
             "total_quantity": 1,
             "is_unresolved": False,
             "price_usd": 1.38,

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from .models import Inventory, DeckAssignment
 from .constants import is_basic_land
+from .finishes import normalize_finish
 
 # ManaBox export column names (case-insensitive match; header has varied
 # slightly across ManaBox versions, so we check a couple of aliases).
@@ -15,6 +16,30 @@ NAME_COLUMNS = ["name", "card name"]
 QTY_COLUMNS = ["quantity", "qty"]
 SET_COLUMNS = ["set code", "set"]
 NUMBER_COLUMNS = ["collector number", "collector_number", "card number", "number"]
+FOIL_COLUMNS = ["foil"]
+
+# ManaBox's Foil column values vary by export version -- map every
+# observed raw value (lowercased) to this app's canonical finish
+# vocabulary (finishes.py). ManaBox is MTG-only today, so this maps
+# onto MTG_FINISHES; "etched" has no dedicated slot there yet, so it
+# collapses into "Foil" rather than inventing a bucket the vocabulary
+# (and thus the finish picker UI) doesn't know about -- revisit if/when
+# MTG_FINISHES grows a real "Etched" entry.
+_MANABOX_FOIL_MAP = {
+    "normal": "Nonfoil",
+    "": "Nonfoil",  # some ManaBox exports leave this blank for non-foil rows
+    "foil": "Foil",
+    "etched": "Foil",
+}
+
+
+def _norm_manabox_finish(raw: str) -> str:
+    """Only meaningful when the CSV actually has a Foil column -- an
+    unrecognized value still lands at "" (unspecified) rather than
+    guessing, same as an unrecognized set code would (see
+    finishes.normalize_finish)."""
+    mapped = _MANABOX_FOIL_MAP.get((raw or "").strip().lower())
+    return normalize_finish(mapped) if mapped is not None else ""
 
 
 @dataclass
@@ -40,16 +65,20 @@ def _find_column(fieldnames: list[str], candidates: list[str]) -> str | None:
 
 def _aggregate_csv(
     csv_text: str, ignore_basic_lands: bool = True
-) -> tuple[dict[tuple[str, str, str], int], list[str], int]:
+) -> tuple[dict[tuple[str, str, str, str], int], list[str], int]:
     """
     Parses the ManaBox CSV and aggregates quantity by (name, set_code,
-    collector_number), since a single printing can appear on multiple
-    rows (e.g. foil and non-foil are separate ManaBox rows but one
-    Inventory total — see models.py). Rows with no set/number columns,
-    or with only one of the two filled in, land in the unresolved
-    bucket ("", "") — a row needs both to pin an exact printing, same
-    rule as a manual add via Manage Collection.
-    Returns ((name, set_code, collector_number) -> total_quantity, warnings, skipped_basic_land_rows).
+    collector_number, finish) — a single printing can appear on
+    multiple rows (e.g. foil and non-foil are separate ManaBox rows,
+    each its own Inventory total now that finish is part of a row's
+    identity — see models.py). Rows with no set/number columns, or
+    with only one of the two filled in, land in the unresolved bucket
+    ("", "") for that axis — a row needs both to pin an exact
+    printing, same rule as a manual add via Manage Collection. finish
+    is resolved independently (see _norm_manabox_finish) — a CSV with
+    no Foil column at all leaves every row's finish "" (unspecified),
+    same as before this app read that column at all.
+    Returns ((name, set_code, collector_number, finish) -> total_quantity, warnings, skipped_basic_land_rows).
     """
     warnings: list[str] = []
     skipped_basic_lands = 0
@@ -62,6 +91,7 @@ def _aggregate_csv(
     qty_col = _find_column(reader.fieldnames, QTY_COLUMNS)
     set_col = _find_column(reader.fieldnames, SET_COLUMNS)
     number_col = _find_column(reader.fieldnames, NUMBER_COLUMNS)
+    foil_col = _find_column(reader.fieldnames, FOIL_COLUMNS)
 
     if name_col is None or qty_col is None:
         raise ValueError(
@@ -69,13 +99,15 @@ def _aggregate_csv(
             f"Expected a name column ({NAME_COLUMNS}) and quantity column ({QTY_COLUMNS})."
         )
 
-    aggregated: dict[tuple[str, str, str], int] = {}
+    aggregated: dict[tuple[str, str, str, str], int] = {}
 
     for i, row in enumerate(reader, start=2):  # start=2: row 1 is the header
         raw_name = (row.get(name_col) or "").strip()
         raw_qty = (row.get(qty_col) or "").strip()
         raw_set = (row.get(set_col) or "").strip().upper() if set_col else ""
         raw_number = (row.get(number_col) or "").strip() if number_col else ""
+        raw_foil = (row.get(foil_col) or "").strip() if foil_col else ""
+        finish = _norm_manabox_finish(raw_foil) if foil_col else ""
 
         if not raw_name:
             warnings.append(f"Row {i}: missing card name, skipped.")
@@ -97,7 +129,7 @@ def _aggregate_csv(
         if not (raw_set and raw_number):
             raw_set, raw_number = "", ""
 
-        key = (raw_name, raw_set, raw_number)
+        key = (raw_name, raw_set, raw_number, finish)
         aggregated[key] = aggregated.get(key, 0) + qty
 
     return aggregated, warnings, skipped_basic_lands
@@ -131,17 +163,18 @@ def bulk_load_inventory(db: Session, csv_text: str, ignore_basic_lands: bool = T
 
     try:
         existing = {
-            (inv.card_name, inv.set_code, inv.collector_number): inv
+            (inv.card_name, inv.set_code, inv.collector_number, inv.finish): inv
             for inv in db.query(Inventory).all()
         }
 
         added = 0
         updated = 0
-        for (card_name, set_code, collector_number), qty in aggregated.items():
-            inv = existing.pop((card_name, set_code, collector_number), None)
+        for (card_name, set_code, collector_number, finish), qty in aggregated.items():
+            inv = existing.pop((card_name, set_code, collector_number, finish), None)
             if inv is None:
                 db.add(Inventory(
-                    card_name=card_name, set_code=set_code, collector_number=collector_number, total_quantity=qty
+                    card_name=card_name, set_code=set_code, collector_number=collector_number,
+                    finish=finish, total_quantity=qty,
                 ))
                 added += 1
             elif inv.total_quantity != qty:
@@ -156,33 +189,36 @@ def bulk_load_inventory(db: Session, csv_text: str, ignore_basic_lands: bool = T
 
         db.flush()  # surface any DB-level errors, and make the reconciliation visible to the queries below
 
-        result.unique_cards_loaded = len({card_name for card_name, _, _ in aggregated})
+        result.unique_cards_loaded = len({card_name for card_name, _, _, _ in aggregated})
         result.total_quantity_loaded = sum(aggregated.values())
         result.printings_added = added
         result.printings_updated = updated
         result.printings_removed = removed
         result.assignments_preserved = db.query(DeckAssignment).count()
 
-        # Printing-level shortfall check: for every printing with deck
-        # assignments, is there still enough inventory (after this
+        # Printing-level shortfall check: for every printing+finish with
+        # deck assignments, is there still enough inventory (after this
         # reconciliation) to back what's checked out?
-        assigned_by_printing: dict[tuple[str, str, str], list[tuple[str, int]]] = {}
+        assigned_by_printing: dict[tuple[str, str, str, str], list[tuple[str, int]]] = {}
         for a in db.query(DeckAssignment).filter(DeckAssignment.quantity > 0).all():
-            key = (a.card_name, a.set_code, a.collector_number)
+            key = (a.card_name, a.set_code, a.collector_number, a.finish)
             assigned_by_printing.setdefault(key, []).append((a.deck_name, a.quantity))
 
         inv_qty_by_printing = {
-            (inv.card_name, inv.set_code, inv.collector_number): inv.total_quantity
+            (inv.card_name, inv.set_code, inv.collector_number, inv.finish): inv.total_quantity
             for inv in db.query(Inventory).all()
         }
 
-        for (card_name, set_code, collector_number), holds in assigned_by_printing.items():
+        for (card_name, set_code, collector_number, finish), holds in assigned_by_printing.items():
             if ignore_basic_lands and is_basic_land(card_name):
                 continue
-            available = inv_qty_by_printing.get((card_name, set_code, collector_number), 0)
+            available = inv_qty_by_printing.get((card_name, set_code, collector_number, finish), 0)
             assigned_total = sum(qty for _, qty in holds)
             if assigned_total > available:
-                printing_label = f" ({set_code} #{collector_number})" if (set_code or collector_number) else ""
+                printing_bits = f"{set_code} #{collector_number}" if (set_code or collector_number) else ""
+                if finish:
+                    printing_bits = f"{printing_bits}, {finish}" if printing_bits else finish
+                printing_label = f" ({printing_bits})" if printing_bits else ""
                 deck_breakdown = ", ".join(f"{qty}x in '{deck_name}'" for deck_name, qty in holds)
                 result.warnings.append(
                     f"'{card_name}'{printing_label} is checked out ({deck_breakdown}) "

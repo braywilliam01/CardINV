@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .models import Inventory, CardPrice
 from .price_estimation import refresh_estimated_prices
 from .inventory_admin import _norm_printing
+from .finishes import normalize_finish
 
 logger = logging.getLogger("mtg_inventory.pricing")
 
@@ -397,23 +398,28 @@ def store_known_price(
     card_name: str,
     set_code: str,
     collector_number: str,
+    finish: str,
     price_usd: float | None,
-    price_usd_foil: float | None,
 ) -> CardPrice:
     """
     Records a price that's already known — e.g. Card Search's "Add to
-    Inventory" button already fetched this exact printing's price a
-    moment ago, so this avoids spending another API call (and leaving
-    the printing showing "unpriced" until the next refresh) just to
+    Inventory" action already fetched this exact printing+finish's
+    price a moment ago, so this avoids spending another API call (and
+    leaving the row showing "unpriced" until the next refresh) just to
     re-fetch what's already on hand. Shares card_prices with the
     refresh path (refresh_single_price above), so a later real refresh
     simply overwrites this the same way it would any other row.
+
+    One price per call now that finish is part of a row's identity
+    (see models.py) — each Card Search price chip is its own finish,
+    each with its own price, rather than a pair on one shared row.
 
     Mirrors card_prices' own convention (see models.py): a price for
     the unresolved bucket (no set/number) is always an estimate, since
     it isn't tied to one specific printing.
     """
     set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
     is_estimated = not (set_code and collector_number)
 
     existing = (
@@ -422,15 +428,15 @@ def store_known_price(
             CardPrice.card_name == card_name,
             CardPrice.set_code == set_code,
             CardPrice.collector_number == collector_number,
+            CardPrice.finish == finish,
         )
         .one_or_none()
     )
     if existing is None:
-        existing = CardPrice(card_name=card_name, set_code=set_code, collector_number=collector_number)
+        existing = CardPrice(card_name=card_name, set_code=set_code, collector_number=collector_number, finish=finish)
         db.add(existing)
 
     existing.price_usd = price_usd
-    existing.price_usd_foil = price_usd_foil
     existing.is_estimated = is_estimated
     existing.updated_at = datetime.now(timezone.utc)
 

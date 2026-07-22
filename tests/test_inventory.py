@@ -126,17 +126,19 @@ def test_delete_checked_out_card_blocked_without_force(registered_client):
 
 
 def test_quick_add_carries_over_known_price(registered_client):
-    """Card Search's 'Add to Inventory' button, with the price it
+    """Card Search's per-variant 'Add' action, with the price it
     already fetched sent along -- should be stored immediately, no
-    separate refresh needed (see pricing.store_known_price)."""
+    separate refresh needed (see pricing.store_known_price). One price
+    per finish now -- 'Foil' here is a real Card Search price-chip
+    label, already a recognized finish (see finishes.MTG_FINISHES)."""
     r = registered_client.post(
         "/api/inventory/quick-add",
         json={
             "card_name": "Campfire",
             "set_code": "CLB",
             "collector_number": "304",
-            "price_usd": 1.38,
-            "price_usd_foil": 1.36,
+            "finish": "Foil",
+            "price_usd": 1.36,
         },
     )
     assert r.status_code == 200, r.text
@@ -146,14 +148,14 @@ def test_quick_add_carries_over_known_price(registered_client):
         {
             "set_code": "CLB",
             "collector_number": "304",
-            "finish": "",
-            "is_finish_unspecified": True,
+            "finish": "Foil",
+            "is_finish_unspecified": False,
             "total_quantity": 1,
             "is_unresolved": False,
-            "price_usd": 1.38,
-            "price_usd_foil": 1.36,
+            "price_usd": 1.36,
+            "price_usd_foil": None,
             "is_estimated": False,
-            "line_value": 1.38,
+            "line_value": 1.36,
         }
     ]
 

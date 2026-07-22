@@ -357,13 +357,17 @@
         <datalist id="add-card-set-list"></datalist>
         <input id="add-card-number" type="text" placeholder="Collector # (optional)" aria-label="Collector number (optional)"
           class="w-40 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <select id="add-card-finish" class="finish-select bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"
+          aria-label="Finish (optional)">
+          <option value="">Unspecified</option>
+        </select>
         <button id="add-card-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
           Add
         </button>
       </div>
       <p class="text-xs text-slate-400">
-        Leave Set/Number blank to add as an unresolved printing — you can assign specific copies to a
-        printing later from the collection table below.
+        Leave Set/Number/Finish blank to add as unresolved/unspecified — you can assign specific copies to a
+        printing (and a printing's copies to a specific finish) later from the collection table below.
       </p>
       <div id="add-card-msg" class="text-sm mt-2" aria-live="polite"></div>
     </div>

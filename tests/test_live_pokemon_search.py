@@ -41,11 +41,12 @@ def test_bogus_name_404s_cleanly(registered_client):
 
 def test_add_to_inventory_carries_over_fetched_price(registered_client):
     """End-to-end: Card Search fetches a real printing's price, and
-    Add to Inventory (quick-add) stores it immediately -- no separate
-    refresh needed. Not every printing has tracked pricing (promos
-    especially), so this tries a few well-known names and accepts the
-    first one that actually has price data, rather than asserting on
-    one specific card that might legitimately come back unpriced."""
+    the per-variant Add action stores that one chip's price
+    immediately -- no separate refresh needed. Not every printing has
+    tracked pricing (promos especially), so this tries a few
+    well-known names and accepts the first one that actually has price
+    data, rather than asserting on one specific card that might
+    legitimately come back unpriced."""
     _switch_to_pokemon(registered_client)
 
     card = None
@@ -58,14 +59,15 @@ def test_add_to_inventory_carries_over_fetched_price(registered_client):
             break
     assert card is not None, "none of the sample names had any tracked pricing -- unexpected"
 
+    chip = card["prices"][0]
     add = registered_client.post(
         "/api/inventory/quick-add",
         json={
             "card_name": card["inventory_name"],
             "set_code": card["set_code"],
             "collector_number": card["collector_number"],
-            "price_usd": card["prices"][0]["value"],
-            "price_usd_foil": card["prices"][1]["value"] if len(card["prices"]) > 1 else None,
+            "finish": chip["label"],
+            "price_usd": chip["value"],
         },
     )
     assert add.status_code == 200, add.text
@@ -73,7 +75,9 @@ def test_add_to_inventory_carries_over_fetched_price(registered_client):
     printings = registered_client.get(
         "/api/inventory/printings", params={"card_name": card["inventory_name"]}
     ).json()["printings"]
-    assert printings[0]["price_usd"] == card["prices"][0]["value"]
+    matched = next(p for p in printings if p["set_code"] == card["set_code"] and p["collector_number"] == card["collector_number"])
+    assert matched["price_usd"] == chip["value"]
+    assert matched["finish"] == chip["label"]  # Pokemon chip labels already match POKEMON_FINISHES 1:1
 
 
 def test_set_and_number_query_resolves_exact_printing(registered_client):

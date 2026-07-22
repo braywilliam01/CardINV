@@ -49,21 +49,24 @@ def test_bogus_printing_with_no_name_404s(registered_client):
 
 def test_add_to_inventory_carries_over_fetched_price(registered_client):
     """End-to-end: Card Search fetches a real printing's price, and
-    Add to Inventory (quick-add) stores it immediately -- no separate
-    refresh needed."""
+    the per-variant Add action stores that one chip's price
+    immediately -- no separate refresh needed. Sends the chip's own
+    label as `finish` (see main.py's _finish_for_chip_label -- MTG's
+    "USD" chip maps to the real "Nonfoil" finish server-side)."""
     lookup = registered_client.get("/api/card-lookup", params={"name": "CLB 304"})
     assert lookup.status_code == 200, lookup.text
     card = lookup.json()
     assert card["prices"], "expected at least one price variant for a real, common printing"
 
+    chip = card["prices"][0]
     add = registered_client.post(
         "/api/inventory/quick-add",
         json={
             "card_name": card["inventory_name"],
             "set_code": card["set_code"],
             "collector_number": card["collector_number"],
-            "price_usd": card["prices"][0]["value"],
-            "price_usd_foil": card["prices"][1]["value"] if len(card["prices"]) > 1 else None,
+            "finish": chip["label"],
+            "price_usd": chip["value"],
         },
     )
     assert add.status_code == 200, add.text
@@ -71,4 +74,6 @@ def test_add_to_inventory_carries_over_fetched_price(registered_client):
     printings = registered_client.get(
         "/api/inventory/printings", params={"card_name": card["inventory_name"]}
     ).json()["printings"]
-    assert printings[0]["price_usd"] == card["prices"][0]["value"]
+    matched = next(p for p in printings if p["set_code"] == card["set_code"] and p["collector_number"] == card["collector_number"])
+    assert matched["price_usd"] == chip["value"]
+    assert matched["is_finish_unspecified"] is False

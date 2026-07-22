@@ -106,6 +106,36 @@ class TestFinishAsIndependentLine:
         assert printings[0]["total_quantity"] == 2
         assert printings[0]["is_finish_unspecified"] is True
 
+    def test_quick_add_maps_usd_chip_label_to_nonfoil(self, registered_client):
+        """MTG Card Search's non-foil price chip is labeled "USD" (see
+        card_lookup.py's prices list) -- that's a currency label, not a
+        finish, so main.py maps it to the real "Nonfoil" finish rather
+        than storing "USD" as if it were one."""
+        r = registered_client.post(
+            "/api/inventory/quick-add",
+            json={
+                "card_name": "Lightning Bolt", "set_code": "CLB", "collector_number": "141",
+                "finish": "USD", "price_usd": 0.25,
+            },
+        )
+        assert r.status_code == 200, r.text
+        printings = registered_client.get("/api/inventory/printings", params={"card_name": "Lightning Bolt"}).json()["printings"]
+        assert printings[0]["finish"] == "Nonfoil"
+        assert printings[0]["price_usd"] == 0.25
+
+    def test_quick_add_foil_chip_label_kept_as_is(self, registered_client):
+        r = registered_client.post(
+            "/api/inventory/quick-add",
+            json={
+                "card_name": "Lightning Bolt", "set_code": "CLB", "collector_number": "141",
+                "finish": "Foil", "price_usd": 2.68,
+            },
+        )
+        assert r.status_code == 200, r.text
+        printings = registered_client.get("/api/inventory/printings", params={"card_name": "Lightning Bolt"}).json()["printings"]
+        assert printings[0]["finish"] == "Foil"
+        assert printings[0]["price_usd"] == 2.68
+
     def test_adjust_quantity_targets_exact_finish_only(self, registered_client):
         registered_client.post(
             "/api/inventory",

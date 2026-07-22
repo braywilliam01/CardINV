@@ -139,6 +139,7 @@ async function switchGame(game) {
     }
     currentGame = game;
     applyGameUIState();
+    loadFinishOptions();
   }
 
   closeDrawer();
@@ -366,37 +367,49 @@ function renderPriceHero(card) {
   // card_lookup.py/pokemon_lookup.py's shared `prices` list shape.
   // Every variant renders at the same size/weight — no single variant
   // is "the" price for the card, so none should visually dominate.
+  // Each has its own "+ Add" action, since adding a copy now means
+  // adding it as *that* specific finish (see addCurrentCardToInventory)
+  // — there's no single "the" printing to add anymore once a card can
+  // have several finish-distinct rows.
   const candidates = card.prices || [];
 
   const priceDisplay = candidates.length
     ? `
-      <div class="flex flex-wrap gap-x-6 gap-y-2 justify-center sm:justify-start">
+      <div class="flex flex-wrap gap-x-6 gap-y-3 justify-center sm:justify-start">
         ${candidates
           .map(
             (c) => `
-          <div class="flex items-baseline gap-2">
-            <span class="text-3xl font-black text-emerald-400 leading-none tracking-tight">$${Number(c.value).toFixed(2)}</span>
-            <span class="text-sm text-slate-400 uppercase tracking-wide">${escapeHtml(c.label)}</span>
+          <div class="flex items-center gap-2">
+            <div class="flex items-baseline gap-2">
+              <span class="text-3xl font-black text-emerald-400 leading-none tracking-tight">$${Number(c.value).toFixed(2)}</span>
+              <span class="text-sm text-slate-400 uppercase tracking-wide">${escapeHtml(c.label)}</span>
+            </div>
+            <button class="card-add-finish-btn bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap"
+              data-finish-label="${escapeHtml(c.label)}" data-price="${c.value}">
+              + Add
+            </button>
           </div>
         `
           )
           .join("")}
       </div>
     `
-    : `<div class="text-xl font-semibold text-slate-400 text-center sm:text-left">No pricing available</div>`;
-
-  return `
-    <div class="bg-emerald-950/20 border-2 border-emerald-800/60 rounded-xl p-5 mb-4">
-      ${priceDisplay}
-      <div class="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-emerald-900/50">
-        <div class="text-sm text-slate-400">
-          <span class="text-slate-400"># owned:</span>
-          <span id="card-owned-qty" class="font-semibold text-slate-100 text-base">${card.owned_quantity}</span>
-        </div>
+    : `
+      <div class="flex items-center justify-between gap-3">
+        <div class="text-xl font-semibold text-slate-400">No pricing available</div>
         <button id="card-add-to-inventory-btn"
           class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap">
           + Add to Inventory
         </button>
+      </div>
+    `;
+
+  return `
+    <div class="bg-emerald-950/20 border-2 border-emerald-800/60 rounded-xl p-5 mb-4">
+      ${priceDisplay}
+      <div class="text-sm text-slate-400 mt-4 pt-4 border-t border-emerald-900/50">
+        <span class="text-slate-400"># owned (any finish):</span>
+        <span id="card-owned-qty" class="font-semibold text-slate-100 text-base">${card.owned_quantity}</span>
       </div>
     </div>
   `;
@@ -472,13 +485,11 @@ function renderPokemonCardBody(card) {
 let currentCardInventoryName = null;
 let currentCardSetCode = "";
 let currentCardCollectorNumber = "";
-let currentCardPrices = [];
 
 function renderCardDetail(card) {
   currentCardInventoryName = card.inventory_name;
   currentCardSetCode = card.set_code || "";
   currentCardCollectorNumber = card.collector_number || "";
-  currentCardPrices = card.prices || [];
 
   const body = currentGame === "pokemon" ? renderPokemonCardBody(card) : renderMtgCardBody(card);
   const legalities = Object.entries(card.legalities || {})
@@ -492,24 +503,34 @@ function renderCardDetail(card) {
     ${renderMetaLine(card)}
   `;
 
-  document.getElementById("card-add-to-inventory-btn").addEventListener("click", addCurrentCardToInventory);
+  // One button per price-chip finish, plus (only when there's no
+  // pricing at all) a single fallback button that adds with finish
+  // left unspecified — see renderPriceHero.
+  document.querySelectorAll(".card-add-finish-btn").forEach((btn) => {
+    btn.addEventListener("click", () =>
+      addCurrentCardToInventory(btn, btn.dataset.finishLabel, Number(btn.dataset.price))
+    );
+  });
+  const fallbackBtn = document.getElementById("card-add-to-inventory-btn");
+  if (fallbackBtn) {
+    fallbackBtn.addEventListener("click", () => addCurrentCardToInventory(fallbackBtn, "", null));
+  }
 }
 
-async function addCurrentCardToInventory() {
+async function addCurrentCardToInventory(btn, finishLabel, price) {
   if (!currentCardInventoryName) return;
 
-  const btn = document.getElementById("card-add-to-inventory-btn");
   const qtyEl = document.getElementById("card-owned-qty");
   const originalText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "Adding...";
+  btn.textContent = "...";
 
   try {
-    // Card Search already fetched this printing's price — send it along
-    // so it's stored immediately instead of showing unpriced until a
-    // separate refresh. Same convention as the backend's price_usd/
-    // price_usd_foil pair: first entry, then second (if any).
-    const [primary, secondary] = currentCardPrices;
+    // Card Search already fetched this chip's price — send it along so
+    // it's stored immediately instead of showing unpriced until a
+    // separate refresh. finishLabel is the chip's own label as shown
+    // (e.g. "Foil", "Reverse Holofoil") — main.py maps it onto this
+    // app's finish vocabulary server-side (see _finish_for_chip_label).
     const res = await fetch(`${API_BASE}/inventory/quick-add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -517,19 +538,21 @@ async function addCurrentCardToInventory() {
         card_name: currentCardInventoryName,
         set_code: currentCardSetCode,
         collector_number: currentCardCollectorNumber,
-        price_usd: primary ? primary.value : null,
-        price_usd_foil: secondary ? secondary.value : null,
+        finish: finishLabel,
+        price_usd: price,
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
 
-    // Show this specific printing's count, not the card's aggregate
-    // total across every printing.
-    const printing = (data.printings || []).find(
-      (p) => p.set_code === currentCardSetCode && p.collector_number === currentCardCollectorNumber
-    );
-    qtyEl.textContent = printing ? printing.total_quantity : data.total_quantity;
+    // "# owned" is a whole-printing figure (any finish) -- Card Search
+    // shows one card, not a finish picker up front, so this sums every
+    // row that matches this printing regardless of which finish button
+    // was actually clicked.
+    const ownedForThisPrinting = (data.printings || [])
+      .filter((p) => p.set_code === currentCardSetCode && p.collector_number === currentCardCollectorNumber)
+      .reduce((sum, p) => sum + p.total_quantity, 0);
+    qtyEl.textContent = currentCardSetCode || currentCardCollectorNumber ? ownedForThisPrinting : data.total_quantity;
   } catch (err) {
     alert(`Failed to add to inventory: ${err.message}`);
   } finally {
@@ -1176,12 +1199,12 @@ function renderInventoryTable(cards) {
           alert("Enter a valid quantity (0 or higher).");
           return;
         }
-        const printing = card.printings[0] || { set_code: "", collector_number: "" };
-        await saveQuantity(card.card_name, newQty, printing.set_code, printing.collector_number);
+        const printing = card.printings[0] || { set_code: "", collector_number: "", finish: "" };
+        await saveQuantity(card.card_name, newQty, printing.set_code, printing.collector_number, printing.finish);
       });
 
       tr.querySelector(".price-refresh").addEventListener("click", async (e) => {
-        const printing = card.printings[0] || { set_code: "", collector_number: "" };
+        const printing = card.printings[0] || { set_code: "", collector_number: "", finish: "" };
         await refreshCardPrice(card.card_name, printing.set_code, printing.collector_number, e.target);
       });
     }
@@ -1233,9 +1256,13 @@ function renderPrintingsPanel(card) {
   const tbody = table.querySelector("tbody");
 
   card.printings.forEach((p) => {
-    const label = p.is_unresolved
+    const printingLabel = p.is_unresolved
       ? `<span class="text-amber-400">Unresolved</span>`
       : `${escapeHtml(p.set_code)} #${escapeHtml(p.collector_number)}`;
+    const finishSuffix = p.finish
+      ? ` <span class="text-slate-400">· ${escapeHtml(p.finish)}</span>`
+      : (p.is_unresolved ? "" : ` <span class="text-amber-400">· Unspecified finish</span>`);
+    const label = printingLabel + finishSuffix;
 
     const priceDisplay = p.price_usd != null ? `$${p.price_usd.toFixed(2)}` : "—";
     const valueDisplay = p.line_value != null ? `$${p.line_value.toFixed(2)}` : "—";
@@ -1245,12 +1272,34 @@ function renderPrintingsPanel(card) {
 
     const printingLabelText = p.is_unresolved
       ? `${escapeHtml(card.card_name)} unresolved copies`
-      : `${escapeHtml(card.card_name)} ${escapeHtml(p.set_code)} #${escapeHtml(p.collector_number)}`;
+      : `${escapeHtml(card.card_name)} ${escapeHtml(p.set_code)} #${escapeHtml(p.collector_number)}${p.finish ? `, ${escapeHtml(p.finish)}` : ""}`;
+
+    // A printing-resolved row with no finish recorded yet can have its
+    // finish assigned in place — the same fix-up idea as the
+    // unresolved-printing workflow below, one axis over.
+    const assignFinishRow = !p.is_unresolved && p.is_finish_unspecified
+      ? `
+        <div class="assign-finish-row flex flex-wrap items-center gap-1 mt-1">
+          <select class="assign-finish-select finish-select bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[11px]"
+            aria-label="Finish to assign for ${printingLabelText}">
+            ${finishSelectOptionsHtml()}
+          </select>
+          <input type="number" min="1" value="${p.total_quantity}" max="${p.total_quantity}"
+            aria-label="Quantity to assign a finish to for ${printingLabelText}"
+            class="assign-finish-qty w-12 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center text-[11px]">
+          <button class="assign-finish-submit bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded text-[11px]">Assign</button>
+        </div>
+        <div class="assign-finish-msg text-[11px] mt-0.5" aria-live="polite"></div>
+      `
+      : "";
 
     const row = document.createElement("tr");
     row.className = "border-b border-slate-800/60";
     row.innerHTML = `
-      <td class="py-1 pr-2">${label}</td>
+      <td class="py-1 pr-2">
+        ${label}
+        ${assignFinishRow}
+      </td>
       <td class="py-1 px-2">
         <input type="number" min="0" value="${p.total_quantity}" aria-label="Quantity for ${printingLabelText}"
           class="printing-qty-input w-16 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center">
@@ -1273,14 +1322,45 @@ function renderPrintingsPanel(card) {
         alert("Enter a valid quantity (0 or higher).");
         return;
       }
-      await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number);
+      await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number, p.finish);
     });
     row.querySelector(".printing-price-refresh").addEventListener("click", async (e) => {
       await refreshCardPrice(card.card_name, p.set_code, p.collector_number, e.target);
     });
     row.querySelector(".printing-delete").addEventListener("click", async () => {
-      await deletePrinting(card.card_name, p.set_code, p.collector_number);
+      await deletePrinting(card.card_name, p.set_code, p.collector_number, p.finish);
     });
+
+    const assignFinishSubmit = row.querySelector(".assign-finish-submit");
+    if (assignFinishSubmit) {
+      assignFinishSubmit.addEventListener("click", async () => {
+        const finish = row.querySelector(".assign-finish-select").value;
+        const qty = parseInt(row.querySelector(".assign-finish-qty").value, 10);
+        const msgEl = row.querySelector(".assign-finish-msg");
+
+        if (isNaN(qty) || qty <= 0) {
+          msgEl.innerHTML = `<span class="text-rose-400">Enter a quantity of 1 or more.</span>`;
+          return;
+        }
+
+        try {
+          const res = await fetch(`${API_BASE}/inventory/assign-printing`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              card_name: card.card_name, quantity: qty,
+              set_code: p.set_code, collector_number: p.collector_number,
+              finish, from_finish: "",
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+          loadInventory();
+        } catch (err) {
+          msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
+        }
+      });
+    }
 
     tbody.appendChild(row);
   });
@@ -1297,6 +1377,10 @@ function renderPrintingsPanel(card) {
           class="fixup-set flex-1 min-w-[100px] bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
         <input type="text" placeholder="Collector #" aria-label="Collector number to assign unresolved ${escapeHtml(card.card_name)} copies to"
           class="fixup-number w-28 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <select class="fixup-finish finish-select bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs"
+          aria-label="Finish to assign unresolved ${escapeHtml(card.card_name)} copies to">
+          ${finishSelectOptionsHtml()}
+        </select>
         <input type="number" min="1" value="1" placeholder="Qty" aria-label="Quantity to assign"
           class="fixup-qty w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
         <button class="fixup-submit bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs font-medium">Assign</button>
@@ -1307,6 +1391,7 @@ function renderPrintingsPanel(card) {
     fixup.querySelector(".fixup-submit").addEventListener("click", async () => {
       const setCode = fixup.querySelector(".fixup-set").value.trim();
       const number = fixup.querySelector(".fixup-number").value.trim();
+      const finish = fixup.querySelector(".fixup-finish").value;
       const qty = parseInt(fixup.querySelector(".fixup-qty").value, 10);
       const msgEl = fixup.querySelector(".fixup-msg");
 
@@ -1323,7 +1408,10 @@ function renderPrintingsPanel(card) {
         const res = await fetch(`${API_BASE}/inventory/assign-printing`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ card_name: card.card_name, quantity: qty, set_code: setCode, collector_number: number }),
+          body: JSON.stringify({
+            card_name: card.card_name, quantity: qty,
+            set_code: setCode, collector_number: number, finish,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
@@ -1339,12 +1427,15 @@ function renderPrintingsPanel(card) {
   return wrap;
 }
 
-async function saveQuantity(cardName, newQty, setCode = "", collectorNumber = "") {
+async function saveQuantity(cardName, newQty, setCode = "", collectorNumber = "", finish = "") {
   try {
     const res = await fetch(`${API_BASE}/inventory`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ card_name: cardName, total_quantity: newQty, set_code: setCode, collector_number: collectorNumber }),
+      body: JSON.stringify({
+        card_name: cardName, total_quantity: newQty,
+        set_code: setCode, collector_number: collectorNumber, finish,
+      }),
     });
     const data = await res.json();
 
@@ -1405,10 +1496,12 @@ async function deleteCard(cardName) {
   }
 }
 
-async function deletePrinting(cardName, setCode, collectorNumber) {
+async function deletePrinting(cardName, setCode, collectorNumber, finish = "") {
   const label = setCode || collectorNumber ? `${setCode} #${collectorNumber}` : "unresolved";
   try {
-    const params = new URLSearchParams({ card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "" });
+    const params = new URLSearchParams({
+      card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "", finish: finish || "",
+    });
     let res = await fetch(
       `${API_BASE}/inventory/printing?${params.toString()}`,
       { method: "DELETE" }
@@ -1478,12 +1571,14 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
   const qtyInput = document.getElementById("add-card-qty");
   const setInput = document.getElementById("add-card-set");
   const numberInput = document.getElementById("add-card-number");
+  const finishInput = document.getElementById("add-card-finish");
   const msgEl = document.getElementById("add-card-msg");
 
   const card_name = nameInput.value.trim();
   const total_quantity = parseInt(qtyInput.value, 10);
   const set_code = setInput.value.trim();
   const collector_number = numberInput.value.trim();
+  const finish = finishInput.value;
 
   if (!card_name) {
     msgEl.innerHTML = `<span class="text-rose-400">Enter a card name.</span>`;
@@ -1498,7 +1593,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     const res = await fetch(`${API_BASE}/inventory`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ card_name, total_quantity, set_code, collector_number }),
+      body: JSON.stringify({ card_name, total_quantity, set_code, collector_number, finish }),
     });
     const data = await res.json();
 
@@ -1511,6 +1606,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     qtyInput.value = "1";
     setInput.value = "";
     numberInput.value = "";
+    finishInput.value = "";
     loadInventory();
   } catch (err) {
     msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
@@ -1543,6 +1639,44 @@ function wireSetAutocomplete(inputId) {
 }
 wireSetAutocomplete("add-card-set");
 wireSetAutocomplete("deck-add-card-set");
+
+// ---------- Finish options (backs the Add a card form and every
+// dynamically-created fix-up/assign-finish select in Manage
+// Collection) — the vocabulary is tiny (2-7 values) and per-game, so
+// this is a small cached fetch-on-game-change rather than a debounced
+// search like sets. Dynamically-created selects read the cache
+// directly (finishSelectOptionsHtml) rather than re-fetching, since
+// there can be several of them on screen at once (one fix-up form per
+// unresolved card row). ----------
+let currentFinishOptions = [];
+
+function finishSelectOptionsHtml(selected = "") {
+  return (
+    `<option value="">Unspecified</option>` +
+    currentFinishOptions
+      .map((f) => `<option value="${escapeHtml(f)}"${f === selected ? " selected" : ""}>${escapeHtml(f)}</option>`)
+      .join("")
+  );
+}
+
+function applyFinishSelectOptions() {
+  document.querySelectorAll(".finish-select").forEach((sel) => {
+    const prev = sel.value;
+    sel.innerHTML = finishSelectOptionsHtml();
+    if (currentFinishOptions.includes(prev)) sel.value = prev;
+  });
+}
+
+async function loadFinishOptions() {
+  try {
+    const res = await fetch(`${API_BASE}/finishes`);
+    const data = await res.json();
+    currentFinishOptions = data.finishes || [];
+    applyFinishSelectOptions();
+  } catch (err) {
+    console.error("Failed to load finishes:", err);
+  }
+}
 
 // ---------- Tab 4 (cont'd): Bulk Add / Remove ----------
 function renderBulkInvResults(lines, warnings, skippedBasics) {
@@ -2072,6 +2206,7 @@ function onAuthenticated(username, game, admin) {
   isAdmin = !!admin;
   currentGame = game || "mtg";
   applyGameUIState();
+  loadFinishOptions();
   loadDeckList(); // populate the Search/Add-to-Deck datalist
   showHomeView();
 }

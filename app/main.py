@@ -70,7 +70,7 @@ from .card_lookup import lookup_card, record_card_view, get_recent_cards
 from .pokemon_lookup import lookup_card as pokemon_lookup_card
 from .pokemon_common import PokemonRateLimitError
 from .sets_cache import search_sets
-from .finishes import FINISHES_BY_GAME
+from .finishes import FINISHES_BY_GAME, normalize_finish
 
 app = FastAPI(
     title="MTG Inventory Manager",
@@ -506,30 +506,46 @@ def card_lookup(
     return result
 
 
+# Card Search's price-chip labels (card_lookup.py/pokemon_lookup.py's
+# `prices` list) aren't quite identical to this app's finish
+# vocabulary (finishes.py) -- MTG's "USD" chip means the card's
+# non-foil price, but "USD" isn't a finish string on its own.
+# Everything else already matches: MTG's "Foil" chip already reads as
+# a real finish, and Pokemon's chip labels are drawn from the same
+# table finishes.py's POKEMON_FINISHES is. Kept here (not in the
+# frontend) so this one small translation lives in one place.
+_CHIP_LABEL_TO_FINISH = {"USD": "Nonfoil"}
+
+
+def _finish_for_chip_label(label: str) -> str:
+    return normalize_finish(_CHIP_LABEL_TO_FINISH.get(label, label))
+
+
 class QuickAddRequest(BaseModel):
     card_name: str
     set_code: str = ""
     collector_number: str = ""
+    finish: str = ""  # raw Card Search price-chip label -- see _finish_for_chip_label
     price_usd: float | None = None
-    price_usd_foil: float | None = None
 
 
 @app.post("/api/inventory/quick-add")
 def inventory_quick_add(req: QuickAddRequest, db: Session = Depends(get_db)):
-    """Card Search's 'Add to Inventory' button — adds exactly one copy
-    of the exact printing shown (falling back to the unresolved bucket
-    if no set/number is given), incrementing an existing (fuzzy-matched
-    on name) row or creating a new one. Card Search already fetched
-    this printing's price, so if given, that's stored immediately
-    rather than leaving the printing unpriced until a separate
-    refresh."""
-    row = add_one_copy(db, req.card_name, req.set_code, req.collector_number)
-    if req.price_usd is not None or req.price_usd_foil is not None:
+    """Card Search's per-variant 'Add' action — adds exactly one copy
+    of the exact printing+finish shown (falling back to the unresolved/
+    unspecified bucket if no set/number/finish is given), incrementing
+    an existing (fuzzy-matched on name) row or creating a new one. Card
+    Search already fetched this price chip's price, so if given, that's
+    stored immediately rather than leaving the row unpriced until a
+    separate refresh."""
+    finish = _finish_for_chip_label(req.finish)
+    row = add_one_copy(db, req.card_name, req.set_code, req.collector_number, finish)
+    if req.price_usd is not None:
         # row.card_name (not req.card_name) -- add_one_copy fuzzy-matches
         # onto an existing inventory name when one's close enough, and
         # the price row has to be keyed the same way or it won't line up
-        # with the printing it's meant to price.
-        store_known_price(db, row.card_name, req.set_code, req.collector_number, req.price_usd, req.price_usd_foil)
+        # with the row it's meant to price.
+        store_known_price(db, row.card_name, req.set_code, req.collector_number, finish, req.price_usd)
         row = build_group_row(db, row.card_name)
     return _row_to_dict(row)
 

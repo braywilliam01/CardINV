@@ -3,6 +3,7 @@ Covers Card Search's exact-printing query parser and the fuzzy name
 matcher used throughout inventory/checkout."""
 from app.card_lookup import _parse_search_query
 from app.fuzzy import find_best_match
+from app.pokemon_common import normalize_collector_number
 
 
 class TestParseSearchQuery:
@@ -58,6 +59,31 @@ class TestParseSearchQuery:
     def test_collector_number_with_trailing_letter(self):
         # Promo/variant collector numbers like "123a" are real.
         assert _parse_search_query("CLB 304a") == ("", "CLB", "304a")
+
+
+class TestNormalizeCollectorNumber:
+    def test_leading_zeros_stripped(self):
+        assert normalize_collector_number("010") == "10"
+        assert normalize_collector_number("001") == "1"
+
+    def test_no_leading_zero_unchanged(self):
+        assert normalize_collector_number("136") == "136"
+
+    def test_all_zero_collapses_to_single_zero(self):
+        assert normalize_collector_number("000") == "0"
+
+    def test_alphanumeric_id_left_alone(self):
+        # Promo sets (e.g. SWSH Black Star Promos) use ids like
+        # "SWSH001" where the padding is part of the id itself, not a
+        # plain zero-padded number -- must not be touched.
+        assert normalize_collector_number("SWSH001") == "SWSH001"
+
+    def test_trailing_letter_suffix_left_alone(self):
+        assert normalize_collector_number("304a") == "304a"
+
+    def test_blank_stays_blank(self):
+        assert normalize_collector_number("") == ""
+        assert normalize_collector_number(None) == ""
 
 
 class TestFindBestMatch:

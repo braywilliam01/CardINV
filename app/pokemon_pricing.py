@@ -6,7 +6,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from .models import Inventory, CardPrice
-from .pokemon_common import POKEMON_API_BASE, HEADERS, extract_usd_prices
+from .pokemon_common import POKEMON_API_BASE, HEADERS, extract_usd_prices, normalize_collector_number
 from .pokemon_lookup import lookup_card, lookup_card_printing
 from .sets_cache import resolve_pokemon_set_id
 from .price_estimation import refresh_estimated_prices
@@ -55,7 +55,13 @@ def _fetch_printing(client: httpx.Client, set_id: str, collector_number: str) ->
     many owned printings has plenty of chances to hit one flaky
     request, and without this a single timeout would throw away
     otherwise-good progress.
+
+    collector_number is normalized (leading zeros stripped) before the
+    request — TCGdex's own ids aren't zero-padded, but inventory rows
+    saved under the previous provider (and the number printed on a
+    physical card) commonly are; see normalize_collector_number.
     """
+    collector_number = normalize_collector_number(collector_number)
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:

@@ -22,6 +22,23 @@ HEADERS = {
 }
 
 
+def normalize_collector_number(collector_number: str) -> str:
+    """
+    TCGdex's localId isn't zero-padded for plain numeric ids ("10", not
+    "010") — but the number printed on a physical card *is* zero-padded
+    ("010/189"), and the previous provider's own numbers matched that
+    padded form, so both a user typing what's on the card and inventory
+    rows saved before this app's move to TCGdex commonly carry leading
+    zeros that would 404 against TCGdex's own id. Only touched when the
+    whole value is digits — alphanumeric ids like "SWSH001" (promo sets)
+    already match TCGdex's own form and must be left alone.
+    """
+    collector_number = (collector_number or "").strip()
+    if collector_number.isdigit():
+        return str(int(collector_number))
+    return collector_number
+
+
 class PokemonRateLimitError(Exception):
     """
     Raised if TCGdex ever responds 429. TCGdex publishes no hard rate

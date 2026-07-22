@@ -76,6 +76,34 @@ def test_add_to_inventory_carries_over_fetched_price(registered_client):
     assert printings[0]["price_usd"] == card["prices"][0]["value"]
 
 
+def test_set_and_number_query_resolves_exact_printing(registered_client):
+    """The free-text "SET NUMBER" printing-reference syntax (see
+    search_query.parse_search_query and the Card Search UI's own help
+    text) -- previously only wired up for MTG; Pokemon's lookup_card
+    just substring-searched the raw "DAA 010" string as a card name
+    and found nothing. Darkness Ablaze #10 (Accelgor) is used because
+    it's a plain, unlikely-to-change common printing."""
+    _switch_to_pokemon(registered_client)
+    r = registered_client.get("/api/card-lookup", params={"name": "DAA 10"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["set_code"] == "DAA"
+    assert data["collector_number"] == "10"
+
+
+def test_set_and_number_query_tolerates_zero_padded_number(registered_client):
+    """The number printed on a physical card (and stored by the
+    previous provider) is zero-padded ("010/189"); TCGdex's own ids
+    aren't ("10"). A search or refresh using the padded form must
+    still resolve -- see pokemon_common.normalize_collector_number."""
+    _switch_to_pokemon(registered_client)
+    r = registered_client.get("/api/card-lookup", params={"name": "DAA 010"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["set_code"] == "DAA"
+    assert data["collector_number"] == "10"
+
+
 def test_single_printing_refresh_matches_search_result(registered_client):
     """Exercises lookup_card_printing's set_code -> TCGdex internal-id
     resolution path (see sets_cache.resolve_pokemon_set_id) -- the

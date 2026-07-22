@@ -7,7 +7,9 @@ from .pokemon_common import (
     REQUEST_TIMEOUT,
     PokemonRateLimitError,
     extract_all_usd_prices,
+    normalize_collector_number,
 )
+from .search_query import parse_search_query
 from .sets_cache import resolve_pokemon_set_id, get_sets
 
 # TCGdex only tracks standard/expanded legality (no "unlimited" field
@@ -48,10 +50,40 @@ def _fetch_card_detail(client: httpx.Client, card_id: str) -> dict | None:
     return resp.json()
 
 
-def lookup_card(name: str) -> dict | None:
+def lookup_card(query: str) -> dict | None:
     """
-    Looks up one card by name against TCGdex. Its search endpoint takes
-    a substring filter (name=like:X) rather than offering true fuzzy
+    Looks up one card from Card Search's free-text input.
+
+    If the query names an exact printing — a trailing "SET NUMBER",
+    optionally after "Card Name, " (see search_query.parse_search_query)
+    — resolves it directly via lookup_card_printing rather than a name
+    search: set+number alone already uniquely identifies one specific
+    printing, unlike a bare name. Falls back to fuzzy name matching
+    when the query doesn't parse as a printing reference, or when a
+    named printing 404s but a name was also given (e.g. a typo'd
+    collector number) — better to surface *a* match than a hard
+    failure on a near-miss.
+    """
+    name, set_code, collector_number = parse_search_query(query)
+
+    if set_code and collector_number:
+        card = lookup_card_printing(name, set_code, collector_number)
+        if card is not None:
+            return card
+        if not name:
+            return None
+        # Fall through to the fuzzy name search below using just `name`.
+
+    if not name:
+        return None
+
+    return _lookup_by_name(name)
+
+
+def _lookup_by_name(name: str) -> dict | None:
+    """
+    Fuzzy-ish name lookup against TCGdex. Its search endpoint takes a
+    substring filter (name=like:X) rather than offering true fuzzy
     matching, so this fetches every printing matching that substring,
     then picks the closest name via the same rapidfuzz matching the
     rest of the app already uses. Typo tolerance is real but weaker
@@ -63,10 +95,6 @@ def lookup_card(name: str) -> dict | None:
     candidate just to compare completeness, this takes the first
     matching printing and fetches its detail directly.
     """
-    name = name.strip()
-    if not name:
-        return None
-
     safe_name = _escape_query_value(name)
     if not safe_name:
         return None
@@ -102,15 +130,17 @@ def lookup_card_printing(name: str, set_code: str, collector_number: str) -> dic
     Precise lookup for one exact printing — unlike lookup_card, this
     doesn't fuzzy-match: it resolves set_code to TCGdex's own internal
     set id (see sets_cache.resolve_pokemon_set_id) and fetches that
-    exact set+number directly. Falls back to a name+localId search if
-    set_code doesn't resolve (e.g. the sets cache hasn't refreshed yet
-    on a brand new install). Used by pokemon_pricing's per-printing
-    refresh, where the caller already knows exactly which printing they
-    own and wants that printing's price, not a best guess.
+    exact set+number directly, no name required. Falls back to a
+    name+localId search if set_code doesn't resolve (e.g. the sets
+    cache hasn't refreshed yet on a brand new install) — that fallback
+    does need a name. Used by lookup_card for a bare "SET NUMBER"
+    query and by pokemon_pricing's per-printing refresh, where the
+    caller already knows exactly which printing they own and wants
+    that printing's price, not a best guess.
     """
-    name = name.strip()
-    collector_number = (collector_number or "").strip()
-    if not name or not collector_number:
+    name = (name or "").strip()
+    collector_number = normalize_collector_number(collector_number)
+    if not collector_number:
         return None
 
     set_id = resolve_pokemon_set_id(set_code) if set_code else None
@@ -130,7 +160,7 @@ def lookup_card_printing(name: str, set_code: str, collector_number: str) -> dic
         else:
             safe_name = _escape_query_value(name)
             cards = _search_cards(client, f"eq:{safe_name}") if safe_name else []
-            matches = [c for c in cards if c.get("localId") == collector_number]
+            matches = [c for c in cards if normalize_collector_number(c.get("localId") or "") == collector_number]
             card = _fetch_card_detail(client, matches[0]["id"]) if matches else None
 
     if card is None:

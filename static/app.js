@@ -1316,7 +1316,7 @@ function renderPrintingsPanel(card) {
         if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
         loadInventory();
       } catch (err) {
-        msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+        msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
       }
     });
 
@@ -1500,7 +1500,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     numberInput.value = "";
     loadInventory();
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
   }
 });
 
@@ -1989,7 +1989,7 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
     if (line && line.status === "ok") {
       msgEl.innerHTML = `<span class="text-emerald-400">Added ${qty}x '${escapeHtml(cardName)}' to '${escapeHtml(deckName)}'.</span>`;
     } else {
-      msgEl.innerHTML = `<span class="text-amber-400">${line ? line.message : "Nothing was added."}</span>`;
+      msgEl.innerHTML = `<span class="text-amber-400">${escapeHtml(line ? line.message : "Nothing was added.")}</span>`;
     }
 
     nameInput.value = "";
@@ -1998,7 +1998,7 @@ document.getElementById("deck-add-card-btn").addEventListener("click", async () 
     numberInput.value = "";
     await afterDeckMutation(deckName);
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
   }
 });
 
@@ -2115,7 +2115,7 @@ document.getElementById("auth-submit-btn").addEventListener("click", async () =>
     document.getElementById("auth-password").value = "";
     onAuthenticated(data.username, undefined, data.is_admin);
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
@@ -2186,7 +2186,7 @@ document.getElementById("settings-change-password-btn").addEventListener("click"
     document.getElementById("settings-confirm-password").value = "";
     msgEl.innerHTML = `<span class="text-emerald-400">Password updated.</span>`;
   } catch (err) {
-    msgEl.innerHTML = `<span class="text-rose-400">${err.message}</span>`;
+    msgEl.innerHTML = `<span class="text-rose-400">${escapeHtml(err.message)}</span>`;
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
@@ -2219,7 +2219,7 @@ async function loadAdminUsersList() {
       container.appendChild(row);
     });
   } catch (err) {
-    container.innerHTML = `<div class="text-sm text-rose-400">Failed to load users: ${err.message}</div>`;
+    container.innerHTML = `<div class="text-sm text-rose-400">Failed to load users: ${escapeHtml(err.message)}</div>`;
   }
 }
 

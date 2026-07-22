@@ -105,10 +105,13 @@ registers afterward gets this automatically, and there's no way to
 promote an account to admin later without editing the database directly.
 
 **Registration is open to anyone who can reach the app** — there's no
-invite code or approval step. Login and registration are both rate
-limited per IP (10 login attempts/5 min, 5 registrations/hour — see
-app/rate_limit.py) as a basic guard against automated abuse, but
-that's a lightweight in-process limiter, not a hardened defense. Open
+invite code or approval step. Login, registration, and Card Search are
+all rate limited per IP (10 login attempts/5 min, 5 registrations/hour,
+30 card lookups/min — see app/rate_limit.py) as a basic guard against
+automated abuse; the Card Search limit doubles as protection for
+pokemontcg.io's shared keyless quota (30 req/min *total*, not per
+visitor — see the POKEMONTCG_API_KEY note above). This is a
+lightweight in-process limiter, not a hardened defense. Open
 registration is fine behind your own network or a tunnel/proxy you
 control, which covers the family/friends scale this is built for; if
 you're exposing it more broadly, put access control (e.g. a Cloudflare

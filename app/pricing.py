@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .models import Inventory, CardPrice
 from .price_estimation import refresh_estimated_prices
+from .inventory_admin import _norm_printing
 
 logger = logging.getLogger("mtg_inventory.pricing")
 
@@ -412,8 +413,7 @@ def store_known_price(
     the unresolved bucket (no set/number) is always an estimate, since
     it isn't tied to one specific printing.
     """
-    set_code = (set_code or "").strip().upper()
-    collector_number = (collector_number or "").strip()
+    set_code, collector_number = _norm_printing(set_code, collector_number)
     is_estimated = not (set_code and collector_number)
 
     existing = (

@@ -103,6 +103,14 @@ if not os.environ.get("POKEMONTCG_API_KEY"):
 _login_rate_limiter = RateLimiter(max_requests=10, window_seconds=300)
 _register_rate_limiter = RateLimiter(max_requests=5, window_seconds=3600)
 
+# Card Search proxies to pokemontcg.io, which caps out at 30 requests/
+# minute *total* on the keyless tier (see pokemon_common.py) — that's
+# shared across every user of this deployment, not per-visitor, so one
+# person rapid-searching (accidentally or via a script) can exhaust it
+# for everyone else. This won't help once a POKEMONTCG_API_KEY is set
+# (much higher ceiling), but costs nothing and helps the common case.
+_card_lookup_rate_limiter = RateLimiter(max_requests=30, window_seconds=60)
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET_KEY,
@@ -464,12 +472,15 @@ def homepage_deck_shortcuts(db: Session = Depends(get_db)):
 
 
 @app.get("/api/card-lookup")
-def card_lookup(name: str, db: Session = Depends(get_db), game: str = Depends(get_current_game)):
+def card_lookup(
+    name: str, request: Request, db: Session = Depends(get_db), game: str = Depends(get_current_game)
+):
     """Homepage's Card Search — fuzzy lookup (Scryfall for MTG,
     pokemontcg.io for Pokemon, chosen by the session's active game) for
     one card's full printed info, plus how many copies are in your
     inventory. The only local writes are bumping the "Last Viewed"
     cache; use POST /api/inventory/quick-add to actually add a copy."""
+    _card_lookup_rate_limiter.check(get_client_ip(request))
     if not name.strip():
         raise HTTPException(status_code=400, detail="Enter a card name to search.")
 

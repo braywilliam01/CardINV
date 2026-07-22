@@ -107,6 +107,16 @@ function applyGameUIState() {
   document.querySelectorAll(".game-mtg-only").forEach((el) => {
     el.classList.toggle("hidden", currentGame !== "mtg");
   });
+
+  const printingHint = document.getElementById("card-search-printing-hint");
+  if (printingHint) {
+    const example = currentGame === "mtg" ? `"Lightning Bolt, CLB 304"` : `"Pikachu, BS 58"`;
+    const bare = currentGame === "mtg" ? `"CLB 304"` : `"BS 58"`;
+    const hash = currentGame === "mtg" ? `"CLB #304"` : `"BS #58"`;
+    printingHint.textContent =
+      `For an exact printing instead of a best guess, add the set code and collector number: ${example} — ` +
+      `or search ${bare} by itself with no card name. A "#" before the number (e.g. ${hash}) works too.`;
+  }
 }
 
 async function switchGame(game) {

@@ -75,5 +75,8 @@ def get_user_engine(username: str, game: str = DEFAULT_GAME):
         db_path = user_dir / "inventory.db"
         engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=engine)
+        from .schema_migrations import migrate_finish_column  # local import: avoids a circular import with models.py at module load time
+
+        migrate_finish_column(engine)
         _user_engines[key] = engine
     return _user_engines[key]

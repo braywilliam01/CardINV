@@ -356,35 +356,38 @@ function renderCardFace(face) {
 
 // Price is a whole-card property (not per-face — see card_lookup.py),
 // so this renders once at the top of the detail view rather than
-// interleaved with per-face bodies. Leads with the price, big and bold,
-// so it's readable at a glance before scrolling past rules text —
-// especially on mobile, where the primary price is the first thing on
-// screen after the card name.
+// interleaved with per-face bodies, and is big/bold so it's readable
+// at a glance before scrolling past rules text — especially on
+// mobile, where it's the first thing on screen after the card name.
 function renderPriceHero(card) {
   // USD only, every variant the printing actually has (MTG: USD/Foil;
   // Pokemon: Normal/Holofoil/Reverse Holofoil/etc. are genuinely
   // different market prices, not interchangeable "foil") — see
   // card_lookup.py/pokemon_lookup.py's shared `prices` list shape.
+  // Every variant renders at the same size/weight — no single variant
+  // is "the" price for the card, so none should visually dominate.
   const candidates = card.prices || [];
-  const [primary, ...secondary] = candidates;
 
-  const priceDisplay = primary
+  const priceDisplay = candidates.length
     ? `
-      <div class="flex items-baseline gap-2 justify-center sm:justify-start">
-        <span class="text-6xl sm:text-7xl font-black text-emerald-400 leading-none tracking-tight">$${Number(primary.value).toFixed(2)}</span>
-        <span class="text-sm text-slate-400 uppercase tracking-wide">${escapeHtml(primary.label)}</span>
+      <div class="flex flex-wrap gap-x-6 gap-y-2 justify-center sm:justify-start">
+        ${candidates
+          .map(
+            (c) => `
+          <div class="flex items-baseline gap-2">
+            <span class="text-3xl font-black text-emerald-400 leading-none tracking-tight">$${Number(c.value).toFixed(2)}</span>
+            <span class="text-sm text-slate-400 uppercase tracking-wide">${escapeHtml(c.label)}</span>
+          </div>
+        `
+          )
+          .join("")}
       </div>
     `
     : `<div class="text-xl font-semibold text-slate-400 text-center sm:text-left">No pricing available</div>`;
 
-  const secondaryHtml = secondary
-    .map((s) => `<span><span class="text-slate-400">${escapeHtml(s.label)}</span> $${Number(s.value).toFixed(2)}</span>`)
-    .join("");
-
   return `
     <div class="bg-emerald-950/20 border-2 border-emerald-800/60 rounded-xl p-5 mb-4">
       ${priceDisplay}
-      ${secondaryHtml ? `<div class="flex flex-wrap gap-3 mt-2 text-sm text-slate-400 justify-center sm:justify-start">${secondaryHtml}</div>` : ""}
       <div class="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-emerald-900/50">
         <div class="text-sm text-slate-400">
           <span class="text-slate-400"># owned:</span>
@@ -504,8 +507,8 @@ async function addCurrentCardToInventory() {
   try {
     // Card Search already fetched this printing's price — send it along
     // so it's stored immediately instead of showing unpriced until a
-    // separate refresh. Same primary/secondary slots renderPriceHero
-    // displays: first entry is price_usd, second (if any) price_usd_foil.
+    // separate refresh. Same convention as the backend's price_usd/
+    // price_usd_foil pair: first entry, then second (if any).
     const [primary, secondary] = currentCardPrices;
     const res = await fetch(`${API_BASE}/inventory/quick-add`, {
       method: "POST",

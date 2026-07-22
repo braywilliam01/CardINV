@@ -62,6 +62,40 @@ def test_aggregate_row_sums_line_value_and_flags_estimated(client, unique_userna
     assert row["has_estimated"] is True
 
 
+def test_estimate_picks_cheapest_across_finishes_of_the_same_printing(client, unique_username):
+    """The cheapest-price query isn't scoped by finish (see
+    price_estimation.py's docstring) -- a Foil row priced higher than
+    its Nonfoil sibling of the *same* printing just shouldn't win the
+    min(), same as it wouldn't across two different printings."""
+    client.post("/api/auth/register", json={"username": unique_username, "password": "testpass123"})
+    client.post(
+        "/api/inventory",
+        json={"card_name": "Sol Ring", "total_quantity": 1, "set_code": "CMR", "collector_number": "123", "finish": "Nonfoil"},
+    )
+    client.post(
+        "/api/inventory/quick-add",
+        json={"card_name": "Sol Ring", "set_code": "CMR", "collector_number": "123", "finish": "Nonfoil", "price_usd": 2.00},
+    )
+    client.post(
+        "/api/inventory",
+        json={"card_name": "Sol Ring", "total_quantity": 1, "set_code": "CMR", "collector_number": "123", "finish": "Foil"},
+    )
+    client.post(
+        "/api/inventory/quick-add",
+        json={"card_name": "Sol Ring", "set_code": "CMR", "collector_number": "123", "finish": "Foil", "price_usd": 9.00},
+    )
+    client.post("/api/inventory", json={"card_name": "Sol Ring", "total_quantity": 3})
+
+    db = _raw_session(unique_username)
+    written = refresh_estimated_prices(db, datetime.now(timezone.utc))
+    db.close()
+    assert written == 1
+
+    printings = client.get("/api/inventory/printings", params={"card_name": "Sol Ring"}).json()["printings"]
+    unresolved = next(p for p in printings if p["is_unresolved"])
+    assert unresolved["price_usd"] == 2.00, "cheapest across both finishes of the same printing, not the average or the foil price"
+
+
 def test_estimation_skips_names_with_no_known_real_price(client, unique_username):
     """A name with only an unresolved bucket and no priced printing at
     all is left unpriced, not defaulted to 0 or errored on."""

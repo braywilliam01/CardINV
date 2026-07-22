@@ -106,3 +106,18 @@ def extract_all_usd_prices(card: dict) -> list[dict]:
         if market is not None:
             result.append({"label": label, "value": market})
     return result
+
+
+def extract_finish_prices(card: dict) -> dict[str, float]:
+    """
+    Every TCGdex tcgplayer variant with a real marketPrice, keyed by
+    this app's canonical finish label (finishes.py's POKEMON_FINISHES,
+    which mirrors _USD_PRICE_VARIANTS's labels 1:1) rather than
+    collapsed to the price_usd/price_usd_foil pair extract_usd_prices
+    produces. Used by pokemon_pricing.py to store one CardPrice row
+    per finish now that finish is part of a row's identity (see
+    models.py) — extract_usd_prices/extract_all_usd_prices stay as-is,
+    still used for Card Search's popup display, a separate (display,
+    not storage) concern.
+    """
+    return {item["label"]: item["value"] for item in extract_all_usd_prices(card)}

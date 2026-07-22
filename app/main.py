@@ -894,21 +894,22 @@ def pricing_refresh_card(
     card_name: str,
     set_code: str = "",
     collector_number: str = "",
+    finish: str = "",
     db: Session = Depends(get_db),
     game: str = Depends(get_current_game),
 ):
-    """On-demand price lookup for one printing (set_code/collector_number
-    given — the '$' button on an expanded printing row) or the
-    unresolved bucket (omitted — the '$' button on a collapsed/
-    single-printing row). Returns the card's full updated group row so
-    the caller can refresh both the aggregate and per-printing display
-    in one round trip."""
+    """On-demand price lookup for one printing+finish (set_code/
+    collector_number given — the '$' button on an expanded printing
+    row) or the unresolved bucket (omitted — the '$' button on a
+    collapsed/single-printing row). Returns the card's full updated
+    group row so the caller can refresh both the aggregate and
+    per-printing display in one round trip."""
     provider_name = "Scryfall" if game == "mtg" else "TCGdex"
     try:
         result = (
-            refresh_single_price(db, card_name, set_code, collector_number)
+            refresh_single_price(db, card_name, set_code, collector_number, finish)
             if game == "mtg"
-            else pokemon_refresh_single_price(db, card_name, set_code, collector_number)
+            else pokemon_refresh_single_price(db, card_name, set_code, collector_number, finish)
         )
     except Exception as e:
         raise HTTPException(status_code=424, detail=f"Failed to reach {provider_name}: {e}")

@@ -1205,7 +1205,7 @@ function renderInventoryTable(cards) {
 
       tr.querySelector(".price-refresh").addEventListener("click", async (e) => {
         const printing = card.printings[0] || { set_code: "", collector_number: "", finish: "" };
-        await refreshCardPrice(card.card_name, printing.set_code, printing.collector_number, e.target);
+        await refreshCardPrice(card.card_name, printing.set_code, printing.collector_number, e.target, printing.finish);
       });
     }
 
@@ -1325,7 +1325,7 @@ function renderPrintingsPanel(card) {
       await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number, p.finish);
     });
     row.querySelector(".printing-price-refresh").addEventListener("click", async (e) => {
-      await refreshCardPrice(card.card_name, p.set_code, p.collector_number, e.target);
+      await refreshCardPrice(card.card_name, p.set_code, p.collector_number, e.target, p.finish);
     });
     row.querySelector(".printing-delete").addEventListener("click", async () => {
       await deletePrinting(card.card_name, p.set_code, p.collector_number, p.finish);
@@ -1537,12 +1537,14 @@ async function deletePrinting(cardName, setCode, collectorNumber, finish = "") {
   }
 }
 
-async function refreshCardPrice(cardName, setCode, collectorNumber, btn) {
+async function refreshCardPrice(cardName, setCode, collectorNumber, btn, finish = "") {
   const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = "...";
   try {
-    const params = new URLSearchParams({ card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "" });
+    const params = new URLSearchParams({
+      card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "", finish: finish || "",
+    });
     const res = await fetch(
       `${API_BASE}/pricing/refresh-card?${params.toString()}`,
       { method: "POST" }

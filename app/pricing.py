@@ -247,23 +247,34 @@ def refresh_all_prices(db: Session) -> dict:
                     skipped_names.append(canonical)
                     continue
 
-                existing = (
-                    db.query(CardPrice)
-                    .filter(
-                        CardPrice.card_name == canonical,
-                        CardPrice.set_code == set_code,
-                        CardPrice.collector_number == collector_number,
+                # One CardPrice row per finish now that finish is part
+                # of a row's identity (see models.py) — "Nonfoil" and
+                # "Foil" from Scryfall's own usd/usd_foil pair, plus a
+                # "" (unspecified) row using the nonfoil price as a
+                # representative value, covering Inventory rows that
+                # haven't been assigned a specific finish yet (see the
+                # fix-up "assign finish" workflow).
+                for finish, price in (("Nonfoil", price_usd), ("Foil", price_usd_foil), ("", price_usd)):
+                    existing = (
+                        db.query(CardPrice)
+                        .filter(
+                            CardPrice.card_name == canonical,
+                            CardPrice.set_code == set_code,
+                            CardPrice.collector_number == collector_number,
+                            CardPrice.finish == finish,
+                        )
+                        .one_or_none()
                     )
-                    .one_or_none()
-                )
-                if existing is None:
-                    existing = CardPrice(card_name=canonical, set_code=set_code, collector_number=collector_number)
-                    db.add(existing)
+                    if existing is None:
+                        existing = CardPrice(
+                            card_name=canonical, set_code=set_code, collector_number=collector_number, finish=finish
+                        )
+                        db.add(existing)
 
-                existing.price_usd = price_usd
-                existing.price_usd_foil = price_usd_foil
-                existing.is_estimated = False
-                existing.updated_at = now
+                    existing.price_usd = price
+                    existing.is_estimated = False
+                    existing.updated_at = now
+
                 matched_keys.add((canonical.lower(), set_code, collector_number))
 
                 pending_since_commit += 1
@@ -318,36 +329,50 @@ def refresh_all_prices(db: Session) -> dict:
         raise
 
 
-def refresh_single_price(db: Session, card_name: str, set_code: str = "", collector_number: str = "") -> CardPrice | None:
+# MTG_FINISHES = ["Nonfoil", "Foil"] -- anything else, including ""
+# (unspecified), uses Scryfall's nonfoil ("usd") price as a
+# representative value; see refresh_single_price/refresh_all_prices.
+_FOIL_FINISHES = {"Foil"}
+
+
+def refresh_single_price(
+    db: Session, card_name: str, set_code: str = "", collector_number: str = "", finish: str = ""
+) -> CardPrice | None:
     """
-    On-demand lookup for one printing. For "just added this card, get
-    its price now" — not meant to be looped over an entire collection
-    (use refresh_all_prices for that).
+    On-demand lookup for one printing+finish. For "just added this
+    card, get its price now" — not meant to be looped over an entire
+    collection (use refresh_all_prices for that).
 
     With set_code/collector_number given, fetches that exact printing
     via Scryfall's precise /cards/{set}/{number} endpoint and stores a
-    real (is_estimated=False) price. Without them (the unresolved
-    bucket's own "$" action), this first tries the free option — if any
-    of the name's other printings already has a real cached price,
-    reuses the cheapest of those as the estimate (see
-    price_estimation.py) rather than spending an API call. Only when no
-    real price is cached yet for the name does it fall back to
-    Scryfall's fuzzy name endpoint — its own guess at "the" printing —
-    storing that as is_estimated=True, same as the bulk refresh's
-    estimate: it's not a price for any specific printing you're known
-    to own.
+    real (is_estimated=False) price for the requested finish (Scryfall
+    reports both usd and usd_foil in one response, so this never needs
+    a second request regardless of which finish was asked for). Without
+    set_code/collector_number (the unresolved bucket's own "$" action),
+    this first tries the free option — if any of the name's other
+    printings already has a real cached price, reuses the cheapest of
+    those as the estimate (see price_estimation.py) rather than
+    spending an API call. Only when no real price is cached yet for the
+    name does it fall back to Scryfall's fuzzy name endpoint — its own
+    guess at "the" printing — storing that as is_estimated=True, same
+    as the bulk refresh's estimate: it's not a price for any specific
+    printing you're known to own.
 
     Returns None if Scryfall has no match at all.
     """
     set_code = (set_code or "").strip()
     collector_number = (collector_number or "").strip()
+    finish = normalize_finish(finish)
 
     if not set_code and not collector_number:
         estimated = refresh_estimated_prices(db, datetime.now(timezone.utc), {card_name})
         if estimated:
             return (
                 db.query(CardPrice)
-                .filter(CardPrice.card_name == card_name, CardPrice.set_code == "", CardPrice.collector_number == "")
+                .filter(
+                    CardPrice.card_name == card_name, CardPrice.set_code == "",
+                    CardPrice.collector_number == "", CardPrice.finish == "",
+                )
                 .one_or_none()
             )
 
@@ -370,6 +395,10 @@ def refresh_single_price(db: Session, card_name: str, set_code: str = "", collec
     prices = card.get("prices", {}) or {}
     usd = prices.get("usd")
     usd_foil = prices.get("usd_foil")
+    price_value = (
+        float(usd_foil) if (finish in _FOIL_FINISHES and usd_foil is not None)
+        else (float(usd) if usd is not None else None)
+    )
 
     existing = (
         db.query(CardPrice)
@@ -377,15 +406,17 @@ def refresh_single_price(db: Session, card_name: str, set_code: str = "", collec
             CardPrice.card_name == card_name,
             CardPrice.set_code == target_set,
             CardPrice.collector_number == target_number,
+            CardPrice.finish == finish,
         )
         .one_or_none()
     )
     if existing is None:
-        existing = CardPrice(card_name=card_name, set_code=target_set, collector_number=target_number)
+        existing = CardPrice(
+            card_name=card_name, set_code=target_set, collector_number=target_number, finish=finish
+        )
         db.add(existing)
 
-    existing.price_usd = float(usd) if usd is not None else None
-    existing.price_usd_foil = float(usd_foil) if usd_foil is not None else None
+    existing.price_usd = price_value
     existing.is_estimated = is_estimated
     existing.updated_at = datetime.now(timezone.utc)
 
@@ -447,12 +478,14 @@ def store_known_price(
 def get_collection_value(db: Session) -> dict:
     """Total known value of the collection, printing by printing —
     each Inventory row is joined to its own exact CardPrice row (real
-    or estimated), since price is per-printing now (see models.py).
-    Printings with no cached price (never refreshed, or not found on
-    Scryfall) are excluded from the total but counted separately so
-    the UI can flag them; estimated printings count as priced but are
-    also reported separately. Also reports when the most recent price
-    was cached, so the UI can show "as of ...".
+    or estimated), matched on finish too now (see models.py) so a Foil
+    Inventory row picks up its own Foil price rather than ambiguously
+    sharing a row with its Nonfoil sibling. Printings with no cached
+    price (never refreshed, or not found on Scryfall) are excluded from
+    the total but counted separately so the UI can flag them; estimated
+    printings count as priced but are also reported separately. Also
+    reports when the most recent price was cached, so the UI can show
+    "as of ...".
     """
     rows = (
         db.query(Inventory, CardPrice)
@@ -460,7 +493,8 @@ def get_collection_value(db: Session) -> dict:
             CardPrice,
             (Inventory.card_name == CardPrice.card_name)
             & (Inventory.set_code == CardPrice.set_code)
-            & (Inventory.collector_number == CardPrice.collector_number),
+            & (Inventory.collector_number == CardPrice.collector_number)
+            & (Inventory.finish == CardPrice.finish),
         )
         .all()
     )

@@ -6,10 +6,11 @@ import httpx
 from sqlalchemy.orm import Session
 
 from .models import Inventory, CardPrice
-from .pokemon_common import POKEMON_API_BASE, HEADERS, extract_usd_prices, normalize_collector_number
+from .pokemon_common import POKEMON_API_BASE, HEADERS, extract_usd_prices, extract_finish_prices, normalize_collector_number
 from .pokemon_lookup import lookup_card, lookup_card_printing
 from .sets_cache import resolve_pokemon_set_id
 from .price_estimation import refresh_estimated_prices
+from .finishes import normalize_finish
 
 logger = logging.getLogger("mtg_inventory.pokemon_pricing")
 
@@ -169,25 +170,38 @@ def refresh_all_prices(db: Session) -> dict:
                     time.sleep(BETWEEN_REQUEST_DELAY_SECONDS)
                     continue
 
-                price_usd, price_usd_foil = extract_usd_prices(card)
+                # One CardPrice row per finish TCGdex actually reports
+                # for this printing (Holofoil, Reverse Holofoil, ...),
+                # plus a "" (unspecified) row using the same nonfoil-ish
+                # representative price extract_usd_prices already picks
+                # — covers Inventory rows that haven't been assigned a
+                # specific finish yet (see the fix-up "assign finish"
+                # workflow), same convention as pricing.py's MTG side.
+                price_usd_representative, _ = extract_usd_prices(card)
+                finish_updates = extract_finish_prices(card)
+                finish_updates[""] = price_usd_representative
 
-                existing = (
-                    db.query(CardPrice)
-                    .filter(
-                        CardPrice.card_name == card_name,
-                        CardPrice.set_code == set_code,
-                        CardPrice.collector_number == collector_number,
+                for finish, price in finish_updates.items():
+                    existing = (
+                        db.query(CardPrice)
+                        .filter(
+                            CardPrice.card_name == card_name,
+                            CardPrice.set_code == set_code,
+                            CardPrice.collector_number == collector_number,
+                            CardPrice.finish == finish,
+                        )
+                        .one_or_none()
                     )
-                    .one_or_none()
-                )
-                if existing is None:
-                    existing = CardPrice(card_name=card_name, set_code=set_code, collector_number=collector_number)
-                    db.add(existing)
+                    if existing is None:
+                        existing = CardPrice(
+                            card_name=card_name, set_code=set_code, collector_number=collector_number, finish=finish
+                        )
+                        db.add(existing)
 
-                existing.price_usd = price_usd
-                existing.price_usd_foil = price_usd_foil
-                existing.is_estimated = False
-                existing.updated_at = now
+                    existing.price_usd = price
+                    existing.is_estimated = False
+                    existing.updated_at = now
+
                 matched_names.add(card_name)
                 matched_printings_count += 1
 
@@ -244,32 +258,36 @@ def refresh_all_prices(db: Session) -> dict:
 
 
 def refresh_single_price(
-    db: Session, card_name: str, set_code: str = "", collector_number: str = ""
+    db: Session, card_name: str, set_code: str = "", collector_number: str = "", finish: str = ""
 ) -> CardPrice | None:
-    """On-demand lookup for one printing via TCGdex — same purpose as
-    pricing.refresh_single_price (the '$' button in Manage Collection)
-    but querying TCGdex via pokemon_lookup instead of Scryfall. Not
-    meant to be looped over an entire collection; use
+    """On-demand lookup for one printing+finish via TCGdex — same
+    purpose as pricing.refresh_single_price (the '$' button in Manage
+    Collection) but querying TCGdex via pokemon_lookup instead of
+    Scryfall. Not meant to be looped over an entire collection; use
     refresh_all_prices for that.
 
     With set_code/collector_number given, fetches that exact printing
-    and stores a real (is_estimated=False) price. Without them (the
-    unresolved bucket's own "$" action), this first tries the free
-    option — reusing the cheapest already-cached real price among the
-    name's other printings (see price_estimation.py) — and only falls
-    back to lookup_card's best-guess name match (stored as
-    is_estimated=True) when no real price is cached yet for the name.
-    Returns None if no match is found.
+    and stores a real (is_estimated=False) price for the requested
+    finish. Without them (the unresolved bucket's own "$" action), this
+    first tries the free option — reusing the cheapest already-cached
+    real price among the name's other printings (see
+    price_estimation.py) — and only falls back to lookup_card's
+    best-guess name match (stored as is_estimated=True) when no real
+    price is cached yet for the name. Returns None if no match is found.
     """
     set_code = (set_code or "").strip()
     collector_number = (collector_number or "").strip()
+    finish = normalize_finish(finish)
 
     if not set_code and not collector_number:
         estimated = refresh_estimated_prices(db, datetime.now(timezone.utc), {card_name})
         if estimated:
             return (
                 db.query(CardPrice)
-                .filter(CardPrice.card_name == card_name, CardPrice.set_code == "", CardPrice.collector_number == "")
+                .filter(
+                    CardPrice.card_name == card_name, CardPrice.set_code == "",
+                    CardPrice.collector_number == "", CardPrice.finish == "",
+                )
                 .one_or_none()
             )
 
@@ -283,27 +301,39 @@ def refresh_single_price(
     if result is None:
         return None
 
+    # result["prices"] (Card Search's popup shape) is a [{label,value}]
+    # list, one entry per finish TCGdex actually reports for this
+    # printing -- use the one matching the row's own finish (e.g.
+    # "Holofoil"). An unspecified-finish ("") row, or a requested
+    # finish TCGdex doesn't separately report for this printing, falls
+    # back to the first (highest-priority) variant present as a
+    # representative price, same convention as refresh_all_prices.
+    prices = result.get("prices") or []
+    prices_by_label = {p["label"]: p["value"] for p in prices}
+    if finish and finish in prices_by_label:
+        price_value = prices_by_label[finish]
+    elif prices:
+        price_value = prices[0]["value"]
+    else:
+        price_value = None
+
     existing = (
         db.query(CardPrice)
         .filter(
             CardPrice.card_name == card_name,
             CardPrice.set_code == target_set,
             CardPrice.collector_number == target_number,
+            CardPrice.finish == finish,
         )
         .one_or_none()
     )
     if existing is None:
-        existing = CardPrice(card_name=card_name, set_code=target_set, collector_number=target_number)
+        existing = CardPrice(
+            card_name=card_name, set_code=target_set, collector_number=target_number, finish=finish
+        )
         db.add(existing)
 
-    # result["prices"] (the Card Search popup shape) rather than a
-    # collapsed price_usd/price_usd_foil pair -- see pokemon_lookup's
-    # _normalize. Same primary/secondary convention as
-    # pricing.store_known_price: first entry is the non-foil-ish price,
-    # second (if any) the foil-ish one.
-    prices = result.get("prices") or []
-    existing.price_usd = prices[0]["value"] if len(prices) > 0 else None
-    existing.price_usd_foil = prices[1]["value"] if len(prices) > 1 else None
+    existing.price_usd = price_value
     existing.is_estimated = is_estimated
     existing.updated_at = datetime.now(timezone.utc)
 

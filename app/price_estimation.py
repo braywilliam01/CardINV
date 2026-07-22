@@ -11,15 +11,19 @@ def refresh_estimated_prices(db: Session, now: datetime, card_names: set[str] | 
     For every card name with an unresolved inventory row (copies not
     yet assigned to a specific printing — see models.py), estimates
     that bucket's price as the *cheapest* known real (non-estimated)
-    printing price for the name, and upserts it as a CardPrice row at
-    the unresolved key ("", "") with is_estimated=True.
+    price for the name, and upserts it as a CardPrice row at the fully
+    unresolved key ("", "", "") with is_estimated=True.
 
     Cheapest rather than average or most-recent, to match the same
     "assume the cheapest printing" philosophy used for deck checkout's
     draw-down rule — a conservative estimate that doesn't overstate
-    collection value. A name with no known real-printing price at all
-    is left unpriced (no row written), same as any other unmatched
-    card.
+    collection value. The cheapest-price query below is intentionally
+    unscoped by set_code/collector_number/finish (just card_name), so
+    it already picks the cheapest across every printing *and* every
+    finish of the name without any extra code — a Foil row priced
+    higher than its Nonfoil sibling just won't win the min().  A name
+    with no known real price at all is left unpriced (no row written),
+    same as any other unmatched card.
 
     `card_names` scopes the estimation pass to just those names (used
     after a single-printing refresh, to avoid a full-table scan for a
@@ -49,15 +53,21 @@ def refresh_estimated_prices(db: Session, now: datetime, card_names: set[str] | 
     for card_name, min_price in cheapest:
         existing = (
             db.query(CardPrice)
-            .filter(CardPrice.card_name == card_name, CardPrice.set_code == "", CardPrice.collector_number == "")
+            .filter(
+                CardPrice.card_name == card_name, CardPrice.set_code == "",
+                CardPrice.collector_number == "", CardPrice.finish == "",
+            )
             .one_or_none()
         )
         if existing is None:
-            existing = CardPrice(card_name=card_name, set_code="", collector_number="")
+            existing = CardPrice(card_name=card_name, set_code="", collector_number="", finish="")
             db.add(existing)
 
         existing.price_usd = min_price
-        existing.price_usd_foil = None  # which printing (and thus foil status) is unknown for an unresolved bucket
+        # price_usd_foil predates finish-as-identity and is vestigial
+        # now (see models.py's CardPrice docstring) -- new writes never
+        # set it, here or anywhere else; which printing/finish is
+        # cheapest is unknown for an unresolved bucket regardless.
         existing.is_estimated = True
         existing.updated_at = now
         written += 1

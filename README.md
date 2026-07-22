@@ -17,21 +17,28 @@ data behind a login.
   Pokémon / Everything) swaps your active game; each has its own database
   file, so nothing about one game's collection touches the other's. The
   **Everything** screen shows combined stats across both.
-- **Per-printing tracking** — inventory is keyed by card name plus
-  (optionally) set and collector number, so the same card across
-  different printings is tracked separately with its own quantity and
-  price. Copies without a known printing sit in an "unresolved" bucket
-  until you assign them to a specific printing via Manage Collection's
-  fix-up workflow — nothing is ever guessed.
+- **Per-printing, per-finish tracking** — inventory is keyed by card
+  name plus (optionally) set, collector number, *and* finish, so the
+  same card across different printings — or different finishes of the
+  same printing, e.g. Holofoil vs. Reverse Holofoil, or foil vs.
+  nonfoil — is tracked separately with its own quantity and price.
+  Copies without a known printing sit in an "unresolved" bucket, and a
+  known printing with no recorded finish sits in its own "unspecified"
+  bucket, until you assign them via Manage Collection's fix-up
+  workflow — nothing is ever guessed.
 - **Manage Collection** — a grouped table (one row per card name,
-  expandable to its individual printings), quantity edits and price
-  lookups at either the card or printing level, and the fix-up flow for
-  resolving unresolved copies to a specific printing.
-- **Per-printing pricing** — Magic prices come from Scryfall's full
-  per-printing bulk data; Pokémon prices from TCGdex. An
-  unresolved bucket gets an *estimated* price (the cheapest known
-  printing of that name) instead of pretending to know which printing
-  it is — estimated prices are flagged as such everywhere they appear.
+  expandable to its individual printings/finishes), quantity edits and
+  price lookups at either the card or printing level, and fix-up flows
+  for resolving unresolved copies to a specific printing and assigning
+  a finish to a printing that doesn't have one recorded yet.
+- **Per-printing, per-finish pricing** — Magic prices come from
+  Scryfall's full per-printing bulk data; Pokémon prices from TCGdex.
+  Every finish a printing has (Nonfoil/Foil for Magic; Normal/Holofoil/
+  Reverse Holofoil/etc. for Pokémon) gets its own real price, not one
+  shared number. An unresolved bucket gets an *estimated* price (the
+  cheapest known price for that name, across every printing and
+  finish) instead of pretending to know which printing it is —
+  estimated prices are flagged as such everywhere they appear.
 - **Collection Search** — paste a decklist, get it split into "available"
   and "missing" outputs based on current inventory, with fuzzy matching
   for typos (Magic only — see Limitations below).
@@ -47,16 +54,27 @@ data behind a login.
   inventory against it, printing by printing: printings in the file are
   added or updated, printings no longer in the file are removed, and (if
   the export includes Set code / Collector number columns) everything is
-  tracked per printing instead of lumped into one bucket per card. Deck
-  assignments are always preserved, with warnings surfaced for any
+  tracked per printing instead of lumped into one bucket per card. A
+  Foil column, if present, is read too — foil and non-foil copies of the
+  same printing land as separate tracked lines instead of being merged.
+  Deck assignments are always preserved, with warnings surfaced for any
   assignment left short after the reconciliation.
 - **Card Search** — fuzzy lookup for any card's full printed info (image,
   rules text, prices, legalities) — Scryfall for Magic, TCGdex for
-  Pokémon — showing exactly how many of that specific printing you own,
-  with a one-click add to inventory.
+  Pokémon — showing exactly how many of that specific printing you own
+  (across every finish) and every price variant it has, each with its
+  own one-click "Add" — adding a Reverse Holofoil copy and a Holofoil
+  copy of the same printing creates two independent lines, not one.
 
 ## Limitations
 
+- Decks are finish-blind by design: checkout/check-in draws from
+  whichever finish is cheapest, the same way it already draws from
+  whichever printing is cheapest, but a decklist line can't pin a
+  specific finish the way it can pin a specific printing with `(SET)
+  NUM`. A card checked out to a deck doesn't say which finish it came
+  from in the deck view, even though the underlying copy is tracked
+  correctly in your collection.
 - Pokémon card search has weaker typo tolerance than Magic's: Scryfall has
   a dedicated fuzzy-match endpoint, TCGdex doesn't, so Pokémon lookups
   fall back to substring matching plus local ranking.

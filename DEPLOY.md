@@ -193,7 +193,73 @@ container and instead:
 
 Then apply your usual TLS termination (certbot / Cloudflare) on top.
 
-## 9. Backups
+## 9. AI agent access (optional)
+
+An AI agent can read a user's collection and decks — never edit them —
+to help suggest deck builds, via a personal API key instead of that
+user's password. This is entirely opt-in per account and needs no
+server-side setup beyond what's already running: the `ApiKey` table is
+created automatically on first startup after upgrading, the same way
+every other table is (`AuthBase.metadata.create_all`, step 7's service
+just needs restarting to pick it up).
+
+**Issue a key** — log in as the account whose collection the agent
+should see, then Settings → API Keys → give it a name (e.g. "Claude
+Desktop") → Create Key. The token is shown once, in the same response
+as the create call — copy it immediately, since only its hash is ever
+stored server-side and it can't be redisplayed later. Each account is
+capped at 2 keys at a time; revoke one from the same panel to free up
+a slot. The same flow works headless via curl if you're scripting a
+setup rather than clicking through the UI:
+
+```bash
+USERNAME="alice"
+PASSWORD="the account's password"
+
+COOKIE_JAR=$(mktemp)
+curl -s -c "$COOKIE_JAR" -X POST http://127.0.0.1:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"username\": \"$USERNAME\", \"password\": \"$PASSWORD\"}" > /dev/null
+
+curl -s -b "$COOKIE_JAR" -X POST http://127.0.0.1:8000/api/auth/api-keys \
+  -H "Content-Type: application/json" -d '{"name": "Claude Desktop"}' | python3 -m json.tool
+# {"id": "...", "name": "Claude Desktop", "token": "cardinv_...", "created_at": "..."}
+rm -f "$COOKIE_JAR"
+```
+
+**Run the MCP server** — `mcp_server.py` at the repo root wraps
+`GET /api/agent/collection` and `GET /api/agent/decks` as MCP tools an
+agent can call directly, over stdio (Claude Desktop/Code's standard
+local-launch transport). It's a separate process from the app itself —
+install its one extra dependency (the `mcp` SDK; everything else it
+needs is already in `requirements.txt`) into the same venv, or a fresh
+one if you'd rather keep it isolated from the app's own dependencies:
+
+```bash
+source /opt/CardINV/venv/bin/activate
+pip install -r requirements-mcp.txt
+```
+
+Point it at this deployment and the token from above, then launch it:
+
+```bash
+CARDINV_BASE_URL=https://cardinv.yourdomain.com \
+CARDINV_API_KEY=cardinv_... \
+  /opt/CardINV/venv/bin/python /opt/CardINV/mcp_server.py
+```
+
+This runs wherever the agent itself runs (your laptop, a Claude
+Desktop config, etc.) — not as a systemd service alongside CardINV —
+since it's stdio-launched by whatever's connecting to it, the same way
+any other local MCP server is. Add it to that tool's MCP server config
+pointing at the command above; consult that tool's own docs for the
+exact config file/format.
+
+**Revoking access:** Settings → API Keys → Revoke immediately
+invalidates that token — the next agent request gets a 401, with
+nothing further to restart or clean up.
+
+## 10. Backups
 
 **File-level (granular, daily):**
 
@@ -303,7 +369,7 @@ Proxmox Datacenter → Backup → schedule `vzdump` snapshots for this LXC.
 Use both — vzdump for full-container recovery, the cron copy for
 restoring an individual day's DB without touching the whole container.
 
-## 10. Verify end-to-end
+## 11. Verify end-to-end
 
 - [ ] `systemctl status CardINV` shows active
 - [ ] App loads via the reverse-proxy URL, not just `127.0.0.1:8000`
@@ -317,3 +383,6 @@ restoring an individual day's DB without touching the whole container.
 - [ ] Cron backup script is executable and cron.daily picks it up
 - [ ] Weekly price-refresh cron script is executable, and covers Pokemon too if the account tracks it
 - [ ] LXC "Start at boot" is enabled in Proxmox UI
+- [ ] Settings → API Keys can create a key (token shown once), and `GET /api/agent/collection` with that token (as `Authorization: Bearer ...`) returns that account's cards
+- [ ] A 3rd key is rejected while 2 already exist; revoking one frees a slot
+- [ ] Revoking a key immediately 401s further requests using its old token

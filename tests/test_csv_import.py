@@ -31,6 +31,8 @@ def test_csv_import_with_set_and_number_columns(registered_client):
             "collector_number": "141",
             "finish": "",
             "is_finish_unspecified": True,
+            "location": "",
+            "is_no_location": True,
             "total_quantity": 4,
             "is_unresolved": False,
             "price_usd": None,

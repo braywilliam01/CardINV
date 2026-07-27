@@ -320,6 +320,17 @@
           class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm"></textarea>
       </div>
     </div>
+
+    <div class="mt-4">
+      <h2 class="font-semibold mb-2 text-slate-200">Pick List — by Location</h2>
+      <p class="text-xs text-slate-400 mb-2">
+        Where to physically go get everything in Output 1 — Available, grouped by storage location.
+      </p>
+      <div id="pick-list-output" class="space-y-3 text-sm bg-slate-900 border border-slate-700 rounded-lg p-3"
+        aria-live="polite">
+        <p class="text-slate-400">Run a search to see a pick list.</p>
+      </div>
+    </div>
   </section>
 
   <!-- ===================== TAB 4: MANAGE COLLECTION ===================== -->
@@ -391,13 +402,18 @@
           aria-label="Finish (optional)">
           <option value="">Unspecified</option>
         </select>
+        <input id="add-card-location" list="add-card-location-list" type="text" placeholder="Location (optional)"
+          aria-label="Storage location (optional)"
+          class="w-40 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <datalist id="add-card-location-list"></datalist>
         <button id="add-card-btn" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium text-sm">
           Add
         </button>
       </div>
       <p class="text-xs text-slate-400">
-        Leave Set/Number/Finish blank to add as unresolved/unspecified — you can assign specific copies to a
-        printing (and a printing's copies to a specific finish) later from the collection table below.
+        Leave Set/Number/Finish/Location blank to add as unresolved/unspecified/not-yet-assigned — you can
+        assign specific copies to a printing, a printing's copies to a specific finish, and any copies to a
+        location later from the collection table below.
       </p>
       <div id="add-card-msg" class="text-sm mt-2" aria-live="polite"></div>
     </div>
@@ -407,11 +423,20 @@
       <h2 class="font-semibold mb-3 text-sm text-slate-300">Bulk add / remove</h2>
       <label for="bulk-inv-input" class="block text-xs text-slate-400 mb-1">
         Paste a list (one card per line, e.g. "2 Lightning Bolt"). Add increases quantities
-        (creating new cards if needed); Remove decreases them, but never below what's checked out to a deck.
+        (creating new cards if needed) at the location below; Remove decreases them from that same
+        location's stock only, but never below what's checked out to a deck.
       </label>
       <textarea id="bulk-inv-input" rows="6" maxlength="5100"
         class="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 font-mono text-sm mb-2"
         placeholder="2 Lightning Bolt&#10;1 Sol Ring"></textarea>
+
+      <label for="bulk-inv-location" class="block text-xs text-slate-400 mb-1">
+        Location (required) — where these cards are (Add) or where to pull them from (Remove).
+      </label>
+      <input id="bulk-inv-location" type="text" required list="add-card-location-list"
+        placeholder="e.g. Box A"
+        aria-label="Storage location (required)"
+        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-2">
 
       <label class="game-mtg-only flex items-center gap-2 text-sm text-slate-400 mb-3 cursor-pointer w-fit">
         <input id="bulk-inv-ignore-basics" type="checkbox" checked
@@ -454,6 +479,13 @@
         <input id="manage-filter-checked-out" type="checkbox" class="rounded border-slate-700 bg-slate-900">
         Checked out only
       </label>
+      <label class="flex items-center gap-1 text-sm text-slate-400">
+        <input id="manage-filter-no-location" type="checkbox" class="rounded border-slate-700 bg-slate-900">
+        No location only
+      </label>
+      <input id="manage-filter-location" type="text" list="add-card-location-list" placeholder="Filter by location..."
+        aria-label="Filter by location"
+        class="w-40 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
       <select id="manage-page-size" aria-label="Results per page" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
         <option value="25">25 / page</option>
         <option value="50" selected>50 / page</option>

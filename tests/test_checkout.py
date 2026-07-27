@@ -190,3 +190,73 @@ def test_checked_in_assignment_retains_drawn_finish(registered_client):
     assert len(printings) == 1
     assert printings[0]["finish"] == "Holofoil"
     assert printings[0]["total_quantity"] == 2  # fully returned to the same row it came from
+
+
+def test_pinned_checkout_sums_across_location_rows(registered_client):
+    """A pinned "(SET) NUM" line has no location syntax -- decks stay
+    location-blind, so its total availability must be the *sum* across
+    every location row of that printing's unspecified-finish bucket,
+    not just whichever single row a stale .one_or_none() lookup would
+    have found."""
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 2, "set_code": "DAA", "collector_number": "10", "location": "Box A"},
+    )
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 3, "set_code": "DAA", "collector_number": "10", "location": "Box B"},
+    )
+
+    r = registered_client.post(
+        "/api/checkout", json={"decklist_text": "4 Charizard (DAA) 10", "deck_name": "Some Deck"}
+    )
+    assert r.status_code == 200, r.text
+    line = r.json()["lines"][0]
+    assert line["fulfilled_qty"] == 4  # 2 + 3 = 5 available across both locations, only 4 requested
+
+
+def test_unpinned_checkout_spans_location_rows_of_same_printing(registered_client):
+    """Unpinned draw-down treats location as just one more dimension of
+    the rows get_printing_availability sums over -- requesting more
+    than either single location row alone can supply forces it to pull
+    from both, the location-axis mirror of the finish-spanning test
+    above."""
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 1, "set_code": "DAA", "collector_number": "10", "location": "Box A"},
+    )
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 1, "set_code": "DAA", "collector_number": "10", "location": "Box B"},
+    )
+
+    r = registered_client.post(
+        "/api/checkout", json={"decklist_text": "2 Charizard", "deck_name": "Some Deck"}
+    )
+    assert r.status_code == 200, r.text
+    line = r.json()["lines"][0]
+    assert line["fulfilled_qty"] == 2  # drew from both location rows -- 1 each, only 1 of each exists
+
+
+def test_available_more_reflects_location_summed_total(registered_client):
+    """get_deck_cards's available_more (and, by the same code path,
+    sync-mode's growth room) must sum a printing's total across every
+    location row, not just whichever one a last-write-wins dict
+    comprehension happened to keep."""
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 2, "set_code": "DAA", "collector_number": "10", "location": "Box A"},
+    )
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Charizard", "total_quantity": 3, "set_code": "DAA", "collector_number": "10", "location": "Box B"},
+    )
+    registered_client.post(
+        "/api/checkout", json={"decklist_text": "1 Charizard (DAA) 10", "deck_name": "Some Deck"}
+    )
+
+    cards = _deck_cards(registered_client, "Some Deck")
+    assert len(cards) == 1
+    # 5 total across both locations, 1 checked out -- 4 more available,
+    # regardless of which location(s) they're actually sitting in.
+    assert cards[0]["available_more"] == 4

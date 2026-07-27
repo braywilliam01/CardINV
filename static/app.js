@@ -168,6 +168,7 @@ async function switchGame(game) {
     currentGame = game;
     applyGameUIState();
     loadFinishOptions();
+    loadInventoryLocations();
   }
 
   closeDrawer();
@@ -669,6 +670,56 @@ searchThresholdVal.addEventListener("blur", () => {
   searchThreshold.value = scale;
 });
 
+// Groups pick-list entries by location and renders them into
+// #pick-list-output — real (non-empty) locations sorted alphabetically
+// first, then a final "No location assigned" group last (if any
+// entries need it), same actionability-first ordering
+// get_location_availability already applies server-side. Reuses
+// buildDecklistLine's "(SET) NUM" suffix convention rather than
+// re-inventing a printing label format.
+function renderPickList(entries) {
+  const container = document.getElementById("pick-list-output");
+  container.innerHTML = "";
+
+  if (!entries || entries.length === 0) {
+    container.innerHTML = `<p class="text-slate-400">Nothing available to pick.</p>`;
+    return;
+  }
+
+  const byLocation = new Map();
+  entries.forEach((e) => {
+    if (!byLocation.has(e.location)) byLocation.set(e.location, []);
+    byLocation.get(e.location).push(e);
+  });
+
+  const locations = [...byLocation.keys()].filter((l) => l !== "").sort((a, b) => a.localeCompare(b));
+  if (byLocation.has("")) locations.push("");
+
+  locations.forEach((location) => {
+    const group = document.createElement("div");
+    const isNoLocation = location === "";
+
+    const header = document.createElement("div");
+    header.className = isNoLocation ? "text-amber-400 font-medium text-xs mb-1" : "text-slate-200 font-medium text-xs mb-1";
+    header.textContent = isNoLocation
+      ? "No location assigned — assign these in Manage Collection"
+      : location;
+    group.appendChild(header);
+
+    const list = document.createElement("div");
+    list.className = "font-mono text-xs space-y-0.5";
+    byLocation.get(location).forEach((e) => {
+      const line = document.createElement("div");
+      const finishNote = e.finish ? `, ${e.finish}` : "";
+      line.textContent = buildDecklistLine(e.quantity, e.card_name, e.set_code, e.collector_number) + finishNote;
+      list.appendChild(line);
+    });
+    group.appendChild(list);
+
+    container.appendChild(group);
+  });
+}
+
 document.getElementById("search-btn").addEventListener("click", async () => {
   const decklist_text = document.getElementById("search-input").value;
   const fuzzy_threshold = scaleToApiThreshold(clampScale(searchThresholdVal.value));
@@ -689,6 +740,7 @@ document.getElementById("search-btn").addEventListener("click", async () => {
 
     document.getElementById("output-available").value = data.available.join("\n");
     document.getElementById("output-missing").value = data.missing.join("\n");
+    renderPickList(data.pick_list);
 
     const warnEl = document.getElementById("search-warnings");
     warnEl.innerHTML = "";
@@ -1036,6 +1088,8 @@ async function loadInventory() {
   const [sortBy, sortDir] = document.getElementById("manage-sort").value.split(":");
   const unresolvedOnly = document.getElementById("manage-filter-unresolved").checked;
   const checkedOutOnly = document.getElementById("manage-filter-checked-out").checked;
+  const noLocationOnly = document.getElementById("manage-filter-no-location").checked;
+  const locationFilter = document.getElementById("manage-filter-location").value.trim();
   const params = new URLSearchParams({
     page: managePage,
     page_size: managePageSize,
@@ -1045,6 +1099,8 @@ async function loadInventory() {
   if (search) params.set("search", search);
   if (unresolvedOnly) params.set("unresolved_only", "true");
   if (checkedOutOnly) params.set("checked_out_only", "true");
+  if (noLocationOnly) params.set("no_location_only", "true");
+  if (locationFilter) params.set("location", locationFilter);
 
   try {
     const res = await fetch(`${API_BASE}/inventory?${params.toString()}`);
@@ -1102,6 +1158,17 @@ document.getElementById("manage-filter-unresolved").addEventListener("change", (
 document.getElementById("manage-filter-checked-out").addEventListener("change", () => {
   managePage = 1;
   loadInventory();
+});
+document.getElementById("manage-filter-no-location").addEventListener("change", () => {
+  managePage = 1;
+  loadInventory();
+});
+document.getElementById("manage-filter-location").addEventListener("input", () => {
+  clearTimeout(manageSearchDebounce);
+  manageSearchDebounce = setTimeout(() => {
+    managePage = 1;
+    loadInventory();
+  }, 300);
 });
 document.getElementById("manage-page-size").addEventListener("change", (e) => {
   managePageSize = parseInt(e.target.value, 10);
@@ -1198,8 +1265,8 @@ function renderInventoryTable(cards) {
           alert("Enter a valid quantity (0 or higher).");
           return;
         }
-        const printing = card.printings[0] || { set_code: "", collector_number: "", finish: "" };
-        await saveQuantity(card.card_name, newQty, printing.set_code, printing.collector_number, printing.finish);
+        const printing = card.printings[0] || { set_code: "", collector_number: "", finish: "", location: "" };
+        await saveQuantity(card.card_name, newQty, printing.set_code, printing.collector_number, printing.finish, printing.location);
       });
 
       tr.querySelector(".price-refresh").addEventListener("click", async (e) => {
@@ -1261,7 +1328,10 @@ function renderPrintingsPanel(card) {
     const finishSuffix = p.finish
       ? ` <span class="text-slate-400">· ${escapeHtml(p.finish)}</span>`
       : (p.is_unresolved ? "" : ` <span class="text-amber-400">· Unspecified finish</span>`);
-    const label = printingLabel + finishSuffix;
+    const locationSuffix = p.is_no_location
+      ? ` <span class="text-amber-400">· No location</span>`
+      : ` <span class="text-slate-400">· ${escapeHtml(p.location)}</span>`;
+    const label = printingLabel + finishSuffix + locationSuffix;
 
     const priceDisplay = p.price_usd != null ? `$${p.price_usd.toFixed(2)}` : "—";
     const valueDisplay = p.line_value != null ? `$${p.line_value.toFixed(2)}` : "—";
@@ -1292,12 +1362,32 @@ function renderPrintingsPanel(card) {
       `
       : "";
 
+    // Relocate mini-form — shown on every row (not just no-location
+    // ones), since unlike finish (discovered once, rarely
+    // reclassified), a card's physical location changes whenever it's
+    // moved between boxes. from_location is pre-filled/read-only to
+    // this row's current location; the text input is the new target.
+    const relocateRow = `
+      <div class="relocate-row flex flex-wrap items-center gap-1 mt-1">
+        <span class="text-[11px] text-slate-500">Move to:</span>
+        <input type="text" list="add-card-location-list" placeholder="New location"
+          class="relocate-location bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[11px]"
+          aria-label="New location for ${printingLabelText}">
+        <input type="number" min="1" value="${p.total_quantity}" max="${p.total_quantity}"
+          class="relocate-qty w-12 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center text-[11px]"
+          aria-label="Quantity to relocate for ${printingLabelText}">
+        <button class="relocate-submit bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded text-[11px]">Move</button>
+      </div>
+      <div class="relocate-msg text-[11px] mt-0.5" aria-live="polite"></div>
+    `;
+
     const row = document.createElement("tr");
     row.className = "border-b border-slate-800/60";
     row.innerHTML = `
       <td class="py-1 pr-2">
         ${label}
         ${assignFinishRow}
+        ${relocateRow}
       </td>
       <td class="py-1 px-2">
         <input type="number" min="0" value="${p.total_quantity}" aria-label="Quantity for ${printingLabelText}"
@@ -1321,13 +1411,13 @@ function renderPrintingsPanel(card) {
         alert("Enter a valid quantity (0 or higher).");
         return;
       }
-      await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number, p.finish);
+      await saveQuantity(card.card_name, newQty, p.set_code, p.collector_number, p.finish, p.location);
     });
     row.querySelector(".printing-price-refresh").addEventListener("click", async (e) => {
       await refreshCardPrice(card.card_name, p.set_code, p.collector_number, e.target, p.finish);
     });
     row.querySelector(".printing-delete").addEventListener("click", async () => {
-      await deletePrinting(card.card_name, p.set_code, p.collector_number, p.finish);
+      await deletePrinting(card.card_name, p.set_code, p.collector_number, p.finish, p.location);
     });
 
     const assignFinishSubmit = row.querySelector(".assign-finish-submit");
@@ -1360,6 +1450,39 @@ function renderPrintingsPanel(card) {
         }
       });
     }
+
+    row.querySelector(".relocate-submit").addEventListener("click", async () => {
+      const newLocation = row.querySelector(".relocate-location").value.trim();
+      const qty = parseInt(row.querySelector(".relocate-qty").value, 10);
+      const msgEl = row.querySelector(".relocate-msg");
+
+      if (!newLocation) {
+        setMsg(msgEl, "Enter a location to move to.");
+        return;
+      }
+      if (isNaN(qty) || qty <= 0) {
+        setMsg(msgEl, "Enter a quantity of 1 or more.");
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/inventory/assign-location`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            card_name: card.card_name, quantity: qty, location: newLocation,
+            set_code: p.set_code, collector_number: p.collector_number,
+            finish: p.finish, from_location: p.location,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+        loadInventory();
+        loadInventoryLocations();
+      } catch (err) {
+        setMsg(msgEl, err.message);
+      }
+    });
 
     tbody.appendChild(row);
   });
@@ -1426,14 +1549,14 @@ function renderPrintingsPanel(card) {
   return wrap;
 }
 
-async function saveQuantity(cardName, newQty, setCode = "", collectorNumber = "", finish = "") {
+async function saveQuantity(cardName, newQty, setCode = "", collectorNumber = "", finish = "", location = "") {
   try {
     const res = await fetch(`${API_BASE}/inventory`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         card_name: cardName, total_quantity: newQty,
-        set_code: setCode, collector_number: collectorNumber, finish,
+        set_code: setCode, collector_number: collectorNumber, finish, location,
       }),
     });
     const data = await res.json();
@@ -1492,11 +1615,12 @@ async function deleteCard(cardName) {
   }
 }
 
-async function deletePrinting(cardName, setCode, collectorNumber, finish = "") {
+async function deletePrinting(cardName, setCode, collectorNumber, finish = "", location = "") {
   const label = setCode || collectorNumber ? `${setCode} #${collectorNumber}` : "unresolved";
   try {
     const params = new URLSearchParams({
-      card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "", finish: finish || "",
+      card_name: cardName, set_code: setCode || "", collector_number: collectorNumber || "",
+      finish: finish || "", location: location || "",
     });
     let res = await fetch(
       `${API_BASE}/inventory/printing?${params.toString()}`,
@@ -1570,6 +1694,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
   const setInput = document.getElementById("add-card-set");
   const numberInput = document.getElementById("add-card-number");
   const finishInput = document.getElementById("add-card-finish");
+  const locationInput = document.getElementById("add-card-location");
   const msgEl = document.getElementById("add-card-msg");
 
   const card_name = nameInput.value.trim();
@@ -1577,6 +1702,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
   const set_code = setInput.value.trim();
   const collector_number = numberInput.value.trim();
   const finish = finishInput.value;
+  const location = locationInput.value.trim();
 
   if (!card_name) {
     setMsg(msgEl, "Enter a card name.");
@@ -1591,7 +1717,7 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     const res = await fetch(`${API_BASE}/inventory`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ card_name, total_quantity, set_code, collector_number, finish }),
+      body: JSON.stringify({ card_name, total_quantity, set_code, collector_number, finish, location }),
     });
     const data = await res.json();
 
@@ -1605,7 +1731,9 @@ document.getElementById("add-card-btn").addEventListener("click", async () => {
     setInput.value = "";
     numberInput.value = "";
     finishInput.value = "";
+    locationInput.value = "";
     loadInventory();
+    if (location) loadInventoryLocations();
   } catch (err) {
     setMsg(msgEl, err.message);
   }
@@ -1674,6 +1802,34 @@ async function loadFinishOptions() {
   }
 }
 
+// ---------- Location autocomplete (backs every Location field: Add a
+// card, Bulk add/remove, the Manage Collection location filter, and
+// every dynamically-created relocate mini-form) — same cache-on-load
+// pattern as finish options rather than a debounced per-keystroke
+// search like sets, since /api/inventory/locations has no query param
+// and the vocabulary is expected to stay small. Refreshed after any
+// action that could introduce a new location string. ----------
+let currentLocations = [];
+
+function applyLocationDatalist() {
+  const datalist = document.getElementById("add-card-location-list");
+  if (!datalist) return;
+  datalist.innerHTML = currentLocations
+    .map((l) => `<option value="${escapeHtml(l)}"></option>`)
+    .join("");
+}
+
+async function loadInventoryLocations() {
+  try {
+    const res = await fetch(`${API_BASE}/inventory/locations`);
+    const data = await res.json();
+    currentLocations = data.locations || [];
+    applyLocationDatalist();
+  } catch (err) {
+    console.error("Failed to load locations:", err);
+  }
+}
+
 // ---------- Tab 4 (cont'd): Bulk Add / Remove ----------
 function renderBulkInvResults(lines, warnings, skippedBasics) {
   const container = document.getElementById("bulk-inv-results");
@@ -1704,9 +1860,14 @@ function renderBulkInvResults(lines, warnings, skippedBasics) {
 async function runBulkInventoryAction(endpoint, btnEl) {
   const decklist_text = document.getElementById("bulk-inv-input").value;
   const ignore_basic_lands = document.getElementById("bulk-inv-ignore-basics").checked;
+  const location = document.getElementById("bulk-inv-location").value.trim();
 
   if (!decklist_text.trim()) {
     alert("Paste a list of cards first.");
+    return;
+  }
+  if (!location) {
+    alert("Enter a location first — required for bulk add/remove.");
     return;
   }
 
@@ -1718,12 +1879,13 @@ async function runBulkInventoryAction(endpoint, btnEl) {
     const res = await fetch(`${API_BASE}/inventory/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decklist_text, ignore_basic_lands }),
+      body: JSON.stringify({ decklist_text, location, ignore_basic_lands }),
     });
-    if (!res.ok) throw new Error(`Server error: ${res.status}`);
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
     renderBulkInvResults(data.lines, data.warnings, data.skipped_basic_lands);
     loadInventory();
+    loadInventoryLocations();
   } catch (err) {
     alert(`${endpoint} failed: ${err.message}`);
   } finally {
@@ -2192,6 +2354,7 @@ function onAuthenticated(username, game, admin) {
   currentGame = game || "mtg";
   applyGameUIState();
   loadFinishOptions();
+  loadInventoryLocations();
   loadDeckList(); // populate the Search/Add-to-Deck datalist
   showHomeView();
 }

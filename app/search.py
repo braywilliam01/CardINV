@@ -1,11 +1,28 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from .models import Inventory
 from .parser import parse_decklist, ParsedLine, _QTY_PREFIX, _QTY_SUFFIX
 from .fuzzy import find_best_match, DEFAULT_THRESHOLD
 from .constants import is_basic_land
-from .availability import get_available_quantity as _get_available_quantity
+from .availability import get_location_availability
+
+
+@dataclass
+class PickListEntry:
+    """One (card, printing, finish, location) slice of an 'available'
+    line's fulfillment — Collection Search's pick list groups these by
+    location so a person can walk to one box at a time. is_no_location
+    flags a slice that can't actually be pointed at physically yet
+    (see availability.get_location_availability and Manage
+    Collection's no-location fix-up filter)."""
+    card_name: str
+    quantity: int
+    location: str
+    set_code: str = ""
+    collector_number: str = ""
+    finish: str = ""
+    is_no_location: bool = False
 
 
 @dataclass
@@ -14,6 +31,7 @@ class SplitResult:
     missing_lines: list[str]
     warnings: list[str]  # unparseable lines, reported separately
     skipped_basic_lands: int = 0
+    pick_list: list[PickListEntry] = field(default_factory=list)
 
 
 def _render_line(parsed: ParsedLine, quantity: int) -> str:
@@ -39,6 +57,48 @@ def _render_line(parsed: ParsedLine, quantity: int) -> str:
     return f"{quantity} {parsed.card_name}"
 
 
+def _allocate_pick(
+    db: Session, card_name: str, qty: int, reserved: dict[tuple, int]
+) -> tuple[int, list[PickListEntry]]:
+    """
+    Decides which (printing, finish, location) rows would supply up to
+    `qty` copies of card_name, without mutating anything — this is a
+    dry preview for the pick list, mirroring checkout._draw_down_checkout's
+    unpinned branch in shape (walk availability rows, cheapest/most-
+    actionable first, claim from each until satisfied) but read-only:
+    no DeckAssignment is created here, only a description of what
+    *would* supply the line for display purposes.
+
+    `reserved` is a running per-row claim guard (one axis more than
+    checkout's equivalent — printing+finish+location, not just
+    printing+finish) shared across every line in one search, so two
+    lines for the same card in one paste can't double-count the same
+    physical copies in the pick list.
+    """
+    used: list[PickListEntry] = []
+    remaining = qty
+    for row in get_location_availability(db, card_name):
+        if remaining <= 0:
+            break
+        key = (card_name, row.set_code, row.collector_number, row.finish, row.location)
+        already_claimed = reserved.get(key, 0)
+        avail_here = max(0, row.available - already_claimed)
+        if avail_here <= 0:
+            continue
+        take = min(avail_here, remaining)
+        reserved[key] = already_claimed + take
+        used.append(
+            PickListEntry(
+                card_name=card_name, quantity=take, location=row.location,
+                set_code=row.set_code, collector_number=row.collector_number, finish=row.finish,
+                is_no_location=(row.location == ""),
+            )
+        )
+        remaining -= take
+
+    return qty - remaining, used
+
+
 def split_by_availability(
     db: Session,
     decklist_text: str,
@@ -52,7 +112,8 @@ def split_by_availability(
     available_out: list[str] = []
     missing_out: list[str] = []
     warnings: list[str] = []
-    reserved: dict[str, int] = {}
+    pick_list: list[PickListEntry] = []
+    reserved: dict[tuple, int] = {}
     skipped_basic_lands = 0
 
     for parsed in parsed_lines:
@@ -73,22 +134,23 @@ def split_by_availability(
             missing_out.append(_render_line(parsed, parsed.quantity))
             continue
 
-        available_qty = _get_available_quantity(db, matched_name, reserved)
+        available_qty, picked = _allocate_pick(db, matched_name, parsed.quantity, reserved)
 
         if available_qty <= 0:
             missing_out.append(_render_line(parsed, parsed.quantity))
         elif available_qty >= parsed.quantity:
             available_out.append(_render_line(parsed, parsed.quantity))
-            reserved[matched_name] = reserved.get(matched_name, 0) + parsed.quantity
+            pick_list.extend(picked)
         else:
             # Partial match: split the requested quantity
             available_out.append(_render_line(parsed, available_qty))
             missing_out.append(_render_line(parsed, parsed.quantity - available_qty))
-            reserved[matched_name] = reserved.get(matched_name, 0) + available_qty
+            pick_list.extend(picked)
 
     return SplitResult(
         available_lines=available_out,
         missing_lines=missing_out,
         warnings=warnings,
         skipped_basic_lands=skipped_basic_lands,
+        pick_list=pick_list,
     )

@@ -6,14 +6,14 @@ and quick-add's price carryover from Card Search. All network-free."""
 def test_bulk_add_lands_in_unresolved_bucket(registered_client):
     r = registered_client.post(
         "/api/inventory/bulk-add",
-        json={"decklist_text": "4 Lightning Bolt\n2 Sol Ring\n1 Brainstorm"},
+        json={"decklist_text": "4 Lightning Bolt\n2 Sol Ring\n1 Brainstorm", "location": "Box A"},
     )
     assert r.status_code == 200, r.text
     assert all(l["status"] in ("ok", "created") for l in r.json()["lines"])
 
 
 def test_add_second_printing_increases_printing_count(registered_client):
-    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "2 Sol Ring"})
+    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "2 Sol Ring", "location": "Box A"})
 
     r = registered_client.post(
         "/api/inventory",
@@ -26,13 +26,13 @@ def test_add_second_printing_increases_printing_count(registered_client):
 
 
 def test_bulk_remove_draws_from_unresolved_first(registered_client):
-    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "2 Sol Ring"})
+    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "2 Sol Ring", "location": "Box A"})
     registered_client.post(
         "/api/inventory",
-        json={"card_name": "Sol Ring", "total_quantity": 3, "set_code": "cmr", "collector_number": "123"},
+        json={"card_name": "Sol Ring", "total_quantity": 3, "set_code": "cmr", "collector_number": "123", "location": "Box A"},
     )
 
-    r = registered_client.post("/api/inventory/bulk-remove", json={"decklist_text": "1 Sol Ring"})
+    r = registered_client.post("/api/inventory/bulk-remove", json={"decklist_text": "1 Sol Ring", "location": "Box A"})
     assert r.status_code == 200, r.text
 
     printings = registered_client.get("/api/inventory/printings", params={"card_name": "Sol Ring"}).json()["printings"]
@@ -72,6 +72,32 @@ def test_fixup_assigns_unresolved_copies_to_printing(registered_client):
     # the card's total must be unchanged.
     row = registered_client.get("/api/inventory", params={"search": "Sol Ring"}).json()["cards"][0]
     assert row["total_quantity"] == 5
+
+
+def test_fully_resolving_unresolved_bucket_stops_flagging_has_unresolved(registered_client):
+    """Regression test: fully draining the unresolved-printing bucket
+    via assign-printing must delete the now-empty 0-quantity row, not
+    leave it sitting around forever tripping has_unresolved /
+    unresolved_only -- discovered live (via the location fix-up
+    workflow, which has the exact same shape) when a fully-relocated
+    card kept showing up in the no-location filter."""
+    registered_client.post("/api/inventory", json={"card_name": "Sol Ring", "total_quantity": 3})
+
+    r = registered_client.post(
+        "/api/inventory/assign-printing",
+        json={"card_name": "Sol Ring", "quantity": 3, "set_code": "CMR", "collector_number": "123"},
+    )
+    assert r.status_code == 200, r.text
+
+    printings = registered_client.get("/api/inventory/printings", params={"card_name": "Sol Ring"}).json()["printings"]
+    assert len(printings) == 1  # the drained-to-0 unresolved row is gone, not lingering at quantity 0
+    assert printings[0]["is_unresolved"] is False
+
+    row = registered_client.get("/api/inventory", params={"search": "Sol Ring"}).json()["cards"][0]
+    assert row["has_unresolved"] is False
+
+    unresolved_only = registered_client.get("/api/inventory", params={"unresolved_only": "true"}).json()["cards"]
+    assert all(c["card_name"] != "Sol Ring" for c in unresolved_only)
 
 
 def test_adjust_quantity_sets_exact_value(registered_client):
@@ -150,6 +176,8 @@ def test_quick_add_carries_over_known_price(registered_client):
             "collector_number": "304",
             "finish": "Foil",
             "is_finish_unspecified": False,
+            "location": "",
+            "is_no_location": True,
             "total_quantity": 1,
             "is_unresolved": False,
             "price_usd": 1.36,

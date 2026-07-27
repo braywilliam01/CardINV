@@ -73,7 +73,7 @@ def test_agent_endpoint_rejects_revoked_key(registered_client):
 
 
 def test_agent_collection_returns_owned_cards(registered_client):
-    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "4 Lightning Bolt\n2 Sol Ring"})
+    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "4 Lightning Bolt\n2 Sol Ring", "location": "Box A"})
     token = _create_api_key(registered_client)["token"]
 
     r = registered_client.get("/api/agent/collection", headers=_auth_headers(token))
@@ -100,7 +100,7 @@ def test_agent_key_scoped_to_owning_user_only(registered_client, client, unique_
 
 
 def test_agent_decks_endpoint_matches_deck_cards(registered_client):
-    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "3 Sol Ring"})
+    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "3 Sol Ring", "location": "Box A"})
     registered_client.post("/api/checkout", json={"decklist_text": "3 Sol Ring", "deck_name": "RampDeck"})
     token = _create_api_key(registered_client)["token"]
 

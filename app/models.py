@@ -4,27 +4,38 @@ from .database import Base
 
 class Inventory(Base):
     """
-    Identity is (card_name, set_code, collector_number, finish) — the
-    same name can have multiple printings (different sets, or even the
-    same set with a different collector number for variant art), and
-    the same printing can have multiple finishes (e.g. Holofoil vs
-    Reverse Holofoil). set_code, collector_number, and finish all
-    default to "" (empty string), never NULL, to represent "unresolved
-    / unspecified" on that dimension — SQLite doesn't enforce
-    uniqueness on NULL (two NULLs are never considered equal), so an
-    empty-string sentinel is what actually makes "at most one
-    unresolved row per name/printing" a real constraint instead of an
-    app-level assumption.
+    Identity is (card_name, set_code, collector_number, finish,
+    location) — the same name can have multiple printings (different
+    sets, or even the same set with a different collector number for
+    variant art), the same printing can have multiple finishes (e.g.
+    Holofoil vs Reverse Holofoil), and the same printing+finish can be
+    split across multiple physical storage locations (e.g. 2 copies in
+    "Box A", 3 in "Box B"). set_code, collector_number, finish, and
+    location all default to "" (empty string), never NULL, to
+    represent "unresolved / unspecified / not yet assigned" on that
+    dimension — SQLite doesn't enforce uniqueness on NULL (two NULLs
+    are never considered equal), so an empty-string sentinel is what
+    actually makes "at most one unresolved row per name/printing" a
+    real constraint instead of an app-level assumption.
 
-    Printing-unresolved (set_code == "" and collector_number == "")
-    and finish-unspecified (finish == "") are independent axes — a row
-    can be in either, neither, or both states. finish == "" is never
-    an assumed base finish (e.g. Nonfoil/Normal): a copy's finish is
-    only known once something actually recorded it (Card Search's
-    per-variant Add, a manual entry, or the fix-up workflow), so
-    "" means genuinely unspecified. See inventory_admin.py's fix-up
-    workflow for how both unresolved printings and unspecified
-    finishes get reconciled over time.
+    Printing-unresolved (set_code == "" and collector_number == ""),
+    finish-unspecified (finish == ""), and location-unassigned
+    (location == "") are independent axes — a row can be in any
+    combination of these states. finish == "" is never an assumed base
+    finish (e.g. Nonfoil/Normal): a copy's finish is only known once
+    something actually recorded it (Card Search's per-variant Add, a
+    manual entry, or the fix-up workflow), so "" means genuinely
+    unspecified. location == "" means genuinely "not yet assigned to a
+    location" the same way — never an assumed default location. See
+    inventory_admin.py's fix-up workflow for how unresolved printings,
+    unspecified finishes, and unassigned locations all get reconciled
+    over time.
+
+    location is deliberately NOT part of CardPrice's identity (a
+    printing+finish's market price doesn't depend on which box it's
+    sitting in) or DeckAssignment's (decks stay location-blind — there
+    is no decklist syntax to pin a location, the same way pinning
+    never specifies finish either — see checkout.py).
     """
     __tablename__ = "inventory"
 
@@ -32,6 +43,7 @@ class Inventory(Base):
     set_code = Column(String, primary_key=True, nullable=False, default="")
     collector_number = Column(String, primary_key=True, nullable=False, default="")
     finish = Column(String, primary_key=True, nullable=False, default="")
+    location = Column(String, primary_key=True, nullable=False, default="")
     total_quantity = Column(Integer, nullable=False, default=0)
 
 

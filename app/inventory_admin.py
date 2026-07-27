@@ -21,6 +21,15 @@ def _norm_printing(set_code: str | None, collector_number: str | None) -> tuple[
     return (set_code or "").strip().upper(), (collector_number or "").strip()
 
 
+def _norm_location(location: str | None) -> str:
+    """Empty string (never None) is the 'not yet assigned a location'
+    sentinel — same convention as set_code/collector_number/finish.
+    No case-canonicalization (unlike normalize_finish): a location is
+    free text a user types (e.g. "Box 3", "Binder A"), not a curated
+    vocabulary to canonicalize against."""
+    return (location or "").strip()
+
+
 @dataclass
 class DeckHold:
     deck_name: str
@@ -46,9 +55,11 @@ class PrintingRow:
     set_code: str
     collector_number: str
     finish: str
+    location: str
     total_quantity: int
     is_unresolved: bool
     is_finish_unspecified: bool
+    is_no_location: bool
     price_usd: float | None = None
     is_estimated: bool = False
     line_value: float | None = None
@@ -136,9 +147,11 @@ def _to_printing_row(inv: Inventory, price: CardPrice | None) -> PrintingRow:
         set_code=inv.set_code,
         collector_number=inv.collector_number,
         finish=inv.finish,
+        location=inv.location,
         total_quantity=inv.total_quantity,
         is_unresolved=(inv.set_code == "" and inv.collector_number == ""),
         is_finish_unspecified=(inv.finish == ""),
+        is_no_location=(inv.location == ""),
         price_usd=price_usd,
         is_estimated=price.is_estimated if price else False,
         line_value=line_value,
@@ -171,7 +184,9 @@ def get_printings_for_card(db: Session, card_name: str) -> list[PrintingRow]:
         .all()
     )
     rows.sort(
-        key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+        key=lambda r: (
+            r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish, r.location,
+        )
     )
 
     price_by_key = {
@@ -220,6 +235,8 @@ def list_inventory(
     sort_dir: str = "asc",
     unresolved_only: bool = False,
     checked_out_only: bool = False,
+    no_location_only: bool = False,
+    location: str | None = None,
 ) -> InventoryPage:
     """
     Returns one page of *grouped* inventory rows (one per card name,
@@ -241,8 +258,9 @@ def list_inventory(
         sort_by = "name"
     descending = sort_dir == "desc"
 
-    # One row per card name: total quantity, and whether any of its
-    # printing rows is the unresolved ("", "") sentinel.
+    # One row per card name: total quantity, whether any of its
+    # printing rows is the unresolved ("", "") sentinel, and whether
+    # any of its rows has no location assigned yet.
     inv_agg = (
         db.query(
             Inventory.card_name.label("card_name"),
@@ -253,6 +271,9 @@ def list_inventory(
                     else_=0,
                 )
             ).label("has_unresolved"),
+            func.max(
+                case((Inventory.location == "", 1), else_=0)
+            ).label("has_no_location"),
         )
         .group_by(Inventory.card_name)
         .subquery()
@@ -314,6 +335,17 @@ def list_inventory(
         query = query.filter(inv_agg.c.has_unresolved == 1)
     if checked_out_only:
         query = query.filter(checked_out_expr > 0)
+    if no_location_only:
+        query = query.filter(inv_agg.c.has_no_location == 1)
+    if location:
+        # Substring match (like `search`'s card-name matching, not an
+        # exact match) — a user typing "Box" should see everything
+        # under "Box A"/"Box B"/"Box 3".
+        query = query.filter(
+            inv_agg.c.card_name.in_(
+                db.query(Inventory.card_name).filter(Inventory.location.ilike(f"%{location}%"))
+            )
+        )
 
     total_count = query.count()
 
@@ -367,7 +399,9 @@ def list_inventory(
     for card_name in card_names:
         printings = printing_map.get(card_name, [])
         printings.sort(
-            key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+            key=lambda r: (
+                r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish, r.location,
+            )
         )
         printing_rows = [
             _to_printing_row(p, price_map.get((card_name, p.set_code, p.collector_number, p.finish)))
@@ -405,24 +439,28 @@ def add_card(
     set_code: str = "",
     collector_number: str = "",
     finish: str = "",
+    location: str = "",
 ) -> InventoryRow:
     """
     Creates one printing row: (card_name, set_code, collector_number,
-    finish). Leaving set_code/collector_number blank creates/targets
-    the 'unresolved' bucket for that name; leaving finish blank
-    creates/targets the 'unspecified' finish for whatever printing was
-    given — the same behavior as before per-printing tracking existed,
-    extended with one more independent axis. Blocks case-insensitive
-    exact duplicates of the same printing+finish (not the same
-    fuzzy-match threshold as bulk_add_cards/add_one_copy: a fuzzy
-    threshold that's fine when the worst case is "merges into the
-    closest match" is too aggressive once the action is "block card
-    creation entirely" — plenty of distinct real card names are only a
-    few characters apart and would otherwise get wrongly rejected).
+    finish, location). Leaving set_code/collector_number blank
+    creates/targets the 'unresolved' bucket for that name; leaving
+    finish blank creates/targets the 'unspecified' finish for whatever
+    printing was given; leaving location blank creates/targets the
+    'not yet assigned' location — the same behavior as before
+    per-printing tracking existed, extended with two more independent
+    axes. Blocks case-insensitive exact duplicates of the same
+    printing+finish+location (not the same fuzzy-match threshold as
+    bulk_add_cards/add_one_copy: a fuzzy threshold that's fine when the
+    worst case is "merges into the closest match" is too aggressive
+    once the action is "block card creation entirely" — plenty of
+    distinct real card names are only a few characters apart and would
+    otherwise get wrongly rejected).
     """
     card_name = card_name.strip()
     set_code, collector_number = _norm_printing(set_code, collector_number)
     finish = normalize_finish(finish)
+    location = _norm_location(location)
     if not card_name:
         raise ValueError("Card name cannot be empty.")
     if total_quantity < 0:
@@ -435,6 +473,7 @@ def add_card(
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
             Inventory.finish == finish,
+            Inventory.location == location,
         )
         .one_or_none()
     )
@@ -447,6 +486,7 @@ def add_card(
             set_code=set_code,
             collector_number=collector_number,
             finish=finish,
+            location=location,
             total_quantity=total_quantity,
         )
     )
@@ -456,19 +496,25 @@ def add_card(
 
 
 def get_owned_quantity(
-    db: Session, card_name: str, set_code: str = "", collector_number: str = "", finish: str | None = None
+    db: Session,
+    card_name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    finish: str | None = None,
+    location: str | None = None,
 ) -> int:
     """
     Fuzzy-matches card_name against inventory (same threshold as bulk
     add/remove). If set_code/collector_number are given, returns that
-    printing's quantity — summed across every finish, unless `finish`
-    is also given (a real value or explicitly ""), in which case it
-    returns just that one finish's quantity. Without set_code/
-    collector_number, returns the total across every printing and
-    finish of the name. Powers Card Search's '# in inventory' figure,
-    which shows "how many of this printing, in any finish, do I own"
-    since Card Search doesn't know which finish the user's copies are
-    until they've actually been added with one.
+    printing's quantity — summed across every finish and location,
+    unless `finish`/`location` are also given (a real value or
+    explicitly ""), in which case the result is filtered to just that
+    finish and/or that location. Without set_code/collector_number,
+    returns the total across every printing, finish, and location of
+    the name. Powers Card Search's '# in inventory' figure, which
+    shows "how many of this printing, in any finish/location, do I
+    own" since Card Search doesn't know which finish or location the
+    user's copies are until they've actually been added with one.
     """
     all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
     matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
@@ -484,6 +530,8 @@ def get_owned_quantity(
         )
         if finish is not None:
             query = query.filter(Inventory.finish == normalize_finish(finish))
+        if location is not None:
+            query = query.filter(Inventory.location == _norm_location(location))
         return query.scalar()
 
     total = (
@@ -495,24 +543,32 @@ def get_owned_quantity(
 
 
 def add_one_copy(
-    db: Session, card_name: str, set_code: str = "", collector_number: str = "", finish: str = ""
+    db: Session,
+    card_name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    finish: str = "",
+    location: str = "",
 ) -> InventoryRow:
     """
-    Increments one exact printing+finish row by one (fuzzy-matching
-    only the card name, to avoid creating "Sol Ring" vs "sol ring"
-    duplicates), creating that row with quantity 1 if it doesn't exist
-    yet. Powers Card Search's "Add to Inventory" button — always adds
-    exactly one copy per click. When Card Search knows the exact
-    printing (set_code/collector_number from the lookup result), that's
-    what gets incremented; otherwise it falls back to the unresolved
-    bucket, same as before per-printing tracking existed. finish
-    defaults to "" (unspecified) the same way — only set when the
-    caller actually knows which finish this copy is (e.g. a specific
-    price-variant "Add" action).
+    Increments one exact printing+finish+location row by one
+    (fuzzy-matching only the card name, to avoid creating "Sol Ring"
+    vs "sol ring" duplicates), creating that row with quantity 1 if it
+    doesn't exist yet. Powers Card Search's "Add to Inventory" button —
+    always adds exactly one copy per click. When Card Search knows the
+    exact printing (set_code/collector_number from the lookup result),
+    that's what gets incremented; otherwise it falls back to the
+    unresolved bucket, same as before per-printing tracking existed.
+    finish defaults to "" (unspecified) the same way — only set when
+    the caller actually knows which finish this copy is (e.g. a
+    specific price-variant "Add" action). location defaults to ""
+    (not yet assigned) — Card Search has no location UI, so this
+    caller never passes one.
     """
     card_name = card_name.strip()
     set_code, collector_number = _norm_printing(set_code, collector_number)
     finish = normalize_finish(finish)
+    location = _norm_location(location)
 
     all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
     matched_name = find_best_match(card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
@@ -525,6 +581,7 @@ def add_one_copy(
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
             Inventory.finish == finish,
+            Inventory.location == location,
         )
         .one_or_none()
     )
@@ -534,6 +591,7 @@ def add_one_copy(
             set_code=set_code,
             collector_number=collector_number,
             finish=finish,
+            location=location,
             total_quantity=0,
         )
         db.add(inv)
@@ -541,6 +599,15 @@ def add_one_copy(
     db.commit()
 
     return build_group_row(db, target_name)
+
+
+def _location_sort_key(location: str) -> tuple[bool, str]:
+    """"" (not yet assigned) sorts first, then alphabetical — the
+    deterministic "which location's stock gets consumed first when the
+    caller doesn't specify one" order used by assign_printing's
+    source-side drain, bulk_remove_cards, and
+    availability.get_location_availability's checked-out subtraction."""
+    return (location != "", location)
 
 
 def assign_printing(
@@ -555,10 +622,10 @@ def assign_printing(
 ) -> InventoryRow:
     """
     The fix-up workflow: moves `quantity` copies of card_name out of a
-    source row and into the (set_code, collector_number, finish)
-    target row, creating the target if it doesn't exist yet. Never
-    changes the card's total_quantity — this only reclassifies which
-    printing/finish bucket the copies live in.
+    source row (or rows) and into the (set_code, collector_number,
+    finish) target row, creating the target if it doesn't exist yet.
+    Never changes the card's total_quantity — this only reclassifies
+    which printing/finish bucket the copies live in.
 
     Two use cases share this one function:
     - Resolving a whole printing (the original, still-default case):
@@ -574,6 +641,19 @@ def assign_printing(
     from_finish=None (the default) means "source from the fully
     unresolved bucket", i.e. the original behavior, unchanged unless
     the caller opts into the finish-only-reassignment case.
+
+    This function stays location-blind by design (see assign_location
+    for relocating copies between locations) — but the source
+    (card_name, source_set, source_number, source_finish) key can now
+    match *several* Inventory rows if those copies are split across
+    locations, so the source side sums across every matching location
+    row and drains them in deterministic order (see
+    _location_sort_key) rather than assuming a single row. The target
+    is always written at location="" — resolving a printing or finish
+    through this location-blind function leaves the result "not yet
+    assigned" a location, the same layered-default precedent already
+    established for finish (printing resolution already leaves finish
+    unspecified by default).
     """
     set_code, collector_number = _norm_printing(set_code, collector_number)
     finish = normalize_finish(finish)
@@ -590,7 +670,7 @@ def assign_printing(
     if (source_set, source_number, source_finish) == (set_code, collector_number, finish):
         raise ValueError("Source and target printing/finish are the same — nothing to assign.")
 
-    source = (
+    source_rows = (
         db.query(Inventory)
         .filter(
             Inventory.card_name == card_name,
@@ -598,14 +678,34 @@ def assign_printing(
             Inventory.collector_number == source_number,
             Inventory.finish == source_finish,
         )
-        .one_or_none()
+        .all()
     )
-    available = source.total_quantity if source else 0
+    source_rows.sort(key=lambda r: _location_sort_key(r.location))
+    available = sum(r.total_quantity for r in source_rows)
     if quantity > available:
         raise ValueError(
             f"Only {available} unresolved cop{'y' if available == 1 else 'ies'} of "
             f"'{card_name}' available to assign."
         )
+
+    remaining = quantity
+    for row in source_rows:
+        if remaining <= 0:
+            break
+        take = min(row.total_quantity, remaining)
+        row.total_quantity -= take
+        remaining -= take
+        if row.total_quantity == 0:
+            # Drained empty -- delete rather than leave a 0-quantity
+            # row sitting around forever. Left alone, a fully-resolved
+            # card would still trip has_unresolved/has_no_location
+            # indefinitely, since those check "does *any* row have the
+            # sentinel value" and don't know a 0-quantity row is really
+            # gone in every way that matters. adjust_quantity, by
+            # contrast, deliberately leaves an explicit 0 in place --
+            # that's a direct user edit (they might restock the same
+            # bucket), not automated drain-to-nothing.
+            db.delete(row)
 
     target = (
         db.query(Inventory)
@@ -614,6 +714,7 @@ def assign_printing(
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
             Inventory.finish == finish,
+            Inventory.location == "",
         )
         .one_or_none()
     )
@@ -623,11 +724,100 @@ def assign_printing(
             set_code=set_code,
             collector_number=collector_number,
             finish=finish,
+            location="",
+            total_quantity=0,
+        )
+        db.add(target)
+
+    target.total_quantity += quantity
+    db.commit()
+
+    return build_group_row(db, card_name)
+
+
+def assign_location(
+    db: Session,
+    card_name: str,
+    quantity: int,
+    location: str,
+    set_code: str = "",
+    collector_number: str = "",
+    finish: str = "",
+    *,
+    from_location: str = "",
+) -> InventoryRow:
+    """
+    Moves `quantity` copies of one exact (card_name, set_code,
+    collector_number, finish) row from `from_location` (default "" —
+    the not-yet-assigned bucket) to `location`. set_code/
+    collector_number/finish default to "" so this also works on the
+    fully-unresolved / unspecified-finish bucket — relocating copies
+    is independent of whether their printing or finish is known yet.
+
+    Mirrors assign_printing's shape (source/target rows, quantity
+    moved, the card's total_quantity never changes) but is a
+    standalone function rather than a mode of assign_printing: unlike
+    assign_printing, which hard-requires a concrete target printing,
+    this must work even when set_code/collector_number are both ""
+    (relocating unresolved-printing copies between locations is a
+    valid, common case with no printing to give assign_printing).
+    """
+    set_code, collector_number = _norm_printing(set_code, collector_number)
+    finish = normalize_finish(finish)
+    location = _norm_location(location)
+    from_location = _norm_location(from_location)
+
+    if quantity <= 0:
+        raise ValueError("Quantity must be positive.")
+    if location == from_location:
+        raise ValueError("Source and target location are the same — nothing to assign.")
+
+    source = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == card_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
+            Inventory.location == from_location,
+        )
+        .one_or_none()
+    )
+    available = source.total_quantity if source else 0
+    if quantity > available:
+        raise ValueError(
+            f"Only {available} cop{'y' if available == 1 else 'ies'} of "
+            f"'{card_name}' available at that location to move."
+        )
+
+    target = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == card_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
+            Inventory.location == location,
+        )
+        .one_or_none()
+    )
+    if target is None:
+        target = Inventory(
+            card_name=card_name,
+            set_code=set_code,
+            collector_number=collector_number,
+            finish=finish,
+            location=location,
             total_quantity=0,
         )
         db.add(target)
 
     source.total_quantity -= quantity
+    if source.total_quantity == 0:
+        # See assign_printing's matching comment -- an automated drain
+        # that empties a row deletes it, rather than leaving a stale
+        # 0-quantity row that'd keep tripping has_no_location forever.
+        db.delete(source)
     target.total_quantity += quantity
     db.commit()
 
@@ -641,23 +831,25 @@ def adjust_quantity(
     set_code: str = "",
     collector_number: str = "",
     finish: str = "",
+    location: str = "",
 ) -> InventoryRow:
     """
-    Sets one printing+finish row's total_quantity directly (used for
-    both +/- nudges and manual edits from the UI — the frontend
-    computes the new absolute value). Blocked if it would drop the
-    *card's* total (this row plus every other printing/finish row of
-    the same name) below what's currently checked out across decks —
-    deck assignments aren't printing-specific yet, so availability is
-    only meaningful at the whole-card level. No force option: reducing
-    inventory below what's checked out always requires checking cards
-    in first.
+    Sets one printing+finish+location row's total_quantity directly
+    (used for both +/- nudges and manual edits from the UI — the
+    frontend computes the new absolute value). Blocked if it would
+    drop the *card's* total (this row plus every other printing/
+    finish/location row of the same name) below what's currently
+    checked out across decks — deck assignments aren't printing- or
+    location-specific yet, so availability is only meaningful at the
+    whole-card level. No force option: reducing inventory below what's
+    checked out always requires checking cards in first.
     """
     if new_total_quantity < 0:
         raise ValueError("Quantity cannot be negative.")
 
     set_code, collector_number = _norm_printing(set_code, collector_number)
     finish = normalize_finish(finish)
+    location = _norm_location(location)
 
     inv = (
         db.query(Inventory)
@@ -666,6 +858,7 @@ def adjust_quantity(
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
             Inventory.finish == finish,
+            Inventory.location == location,
         )
         .one_or_none()
     )
@@ -683,6 +876,7 @@ def adjust_quantity(
                 (Inventory.set_code == set_code)
                 & (Inventory.collector_number == collector_number)
                 & (Inventory.finish == finish)
+                & (Inventory.location == location)
             ),
         )
         .scalar()
@@ -703,18 +897,20 @@ def delete_card(
     set_code: str = "",
     collector_number: str = "",
     finish: str = "",
+    location: str = "",
     force: bool = False,
 ) -> None:
     """
-    Removes one printing+finish row. Blocked by default only if
-    removing it would drop the card's total below what's checked out
-    across decks (i.e. the other rows alone can't cover it) — raises
-    BlockedDeleteError so the caller can surface a 409 with the deck
-    breakdown and let the user confirm. With force=True, deletes the
-    deck_assignments too in that case.
+    Removes one printing+finish+location row. Blocked by default only
+    if removing it would drop the card's total below what's checked
+    out across decks (i.e. the other rows alone can't cover it) —
+    raises BlockedDeleteError so the caller can surface a 409 with the
+    deck breakdown and let the user confirm. With force=True, deletes
+    the deck_assignments too in that case.
     """
     set_code, collector_number = _norm_printing(set_code, collector_number)
     finish = normalize_finish(finish)
+    location = _norm_location(location)
 
     inv = (
         db.query(Inventory)
@@ -723,6 +919,7 @@ def delete_card(
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
             Inventory.finish == finish,
+            Inventory.location == location,
         )
         .one_or_none()
     )
@@ -740,6 +937,7 @@ def delete_card(
                 (Inventory.set_code == set_code)
                 & (Inventory.collector_number == collector_number)
                 & (Inventory.finish == finish)
+                & (Inventory.location == location)
             ),
         )
         .scalar()
@@ -752,7 +950,9 @@ def delete_card(
         # Deck assignments are printing-concrete (see models.py) — only
         # the ones actually pinned to *this* printing+finish become
         # invalid; assignments drawn from other printings/finishes, or
-        # the unresolved bucket, are untouched.
+        # the unresolved bucket, are untouched. Deck assignments have
+        # no location column (decks stay location-blind), so this
+        # still only keys on printing+finish.
         db.query(DeckAssignment).filter(
             DeckAssignment.card_name == card_name,
             DeckAssignment.set_code == set_code,
@@ -807,19 +1007,25 @@ class BulkResult:
 def bulk_add_cards(
     db: Session,
     decklist_text: str,
+    location: str,
     ignore_basic_lands: bool = True,
 ) -> BulkResult:
     """
-    Adds quantities to inventory from a pasted list. Fuzzy-matches each
-    line against existing card names first (so "Ligtning Bolt" adds to
-    the existing "Lightning Bolt" row instead of creating a near-duplicate);
-    if nothing matches closely enough, a new card is created with the
-    typed name. A pasted decklist carries no set/number info, so every
-    add lands in the unresolved bucket, creating it if this name's
-    copies are all currently resolved to specific printings — use the
-    Manage Collection fix-up workflow afterward to assign copies to
-    specific printings.
+    Adds quantities to inventory from a pasted list, all landing at
+    `location` (required — this is the paste-based bulk-add flow used
+    for physically adding a new stack of cards to one box/binder at a
+    time, so every line in one call shares the same destination).
+    Fuzzy-matches each line against existing card names first (so
+    "Ligtning Bolt" adds to the existing "Lightning Bolt" row instead
+    of creating a near-duplicate); if nothing matches closely enough, a
+    new card is created with the typed name. A pasted decklist carries
+    no set/number/finish info, so every add lands in the unresolved-
+    printing, unspecified-finish bucket at the given location, creating
+    it if this name's copies at that location don't already have such
+    a row — use the Manage Collection fix-up workflow afterward to
+    assign copies to specific printings/finishes/locations.
     """
+    location = _norm_location(location)
     parsed_lines = parse_decklist(decklist_text)
     all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
@@ -840,7 +1046,7 @@ def bulk_add_cards(
         if matched_name is None:
             # No close match — create a new inventory entry.
             new_name = parsed.card_name
-            db.add(Inventory(card_name=new_name, total_quantity=parsed.quantity))
+            db.add(Inventory(card_name=new_name, total_quantity=parsed.quantity, location=location))
             all_card_names.append(new_name)  # so later lines in this same paste can match it
             result.lines.append(
                 BulkLineResult(
@@ -857,11 +1063,12 @@ def bulk_add_cards(
                 Inventory.set_code == "",
                 Inventory.collector_number == "",
                 Inventory.finish == "",
+                Inventory.location == location,
             )
             .one_or_none()
         )
         if inv is None:
-            inv = Inventory(card_name=matched_name, total_quantity=0)
+            inv = Inventory(card_name=matched_name, total_quantity=0, location=location)
             db.add(inv)
         inv.total_quantity += parsed.quantity
         result.lines.append(
@@ -875,22 +1082,31 @@ def bulk_add_cards(
 def bulk_remove_cards(
     db: Session,
     decklist_text: str,
+    location: str,
     ignore_basic_lands: bool = True,
 ) -> BulkResult:
     """
     Removes quantities from inventory from a pasted list (e.g. pulling
-    damaged or lost cards). Only reduces down to what's currently
-    checked out across decks — never below, since that would make a
-    deck's assignment exceed what you own. If the requested removal
-    would go below that floor, only the safe portion is removed and the
-    line is marked "partial" with an explanation.
+    damaged or lost cards physically out of one named box/binder).
+    `location` (required) scopes removal to just that location's
+    stock — someone pulling cards out of a specific box shouldn't have
+    the removal silently drain a *different* location's count instead,
+    which would defeat the whole point of tracking location. Still
+    only reduces down to what's currently checked out across decks —
+    never below, since that would make a deck's assignment exceed what
+    you own; that floor stays global (decks are location-blind — see
+    models.py) even though the removal itself is location-scoped. If
+    the requested removal would go below either limit, only the safe
+    portion is removed and the line is marked "partial".
 
-    A pasted line carries no set/number info, so removal draws from the
-    unresolved bucket first, then falls back to specific printings (in
-    set/number order) if the unresolved bucket alone isn't enough —
-    preferring to consume the least-specific data before touching
-    copies already resolved to a known printing.
+    A pasted line carries no set/number info, so within the given
+    location, removal draws from the unresolved bucket first, then
+    falls back to specific printings (in set/number order) if the
+    unresolved bucket alone isn't enough — preferring to consume the
+    least-specific data before touching copies already resolved to a
+    known printing.
     """
+    location = _norm_location(location)
     parsed_lines = parse_decklist(decklist_text)
     all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
 
@@ -918,42 +1134,60 @@ def bulk_remove_cards(
             )
             continue
 
-        printings = db.query(Inventory).filter(Inventory.card_name == matched_name).all()
-        printings.sort(
-            key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
-        )
-        group_total = sum(p.total_quantity for p in printings)
-
         decks = _decks_for(db, matched_name)
         checked_out = sum(d.quantity for d in decks)
 
+        # Global floor: never drop the card's total (across every
+        # location) below what's checked out anywhere — decks are
+        # location-blind, so this has to stay a whole-card check.
+        all_locations_total = (
+            db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
+            .filter(Inventory.card_name == matched_name)
+            .scalar()
+        )
+        global_room = max(0, all_locations_total - checked_out)
+
+        location_printings = (
+            db.query(Inventory)
+            .filter(Inventory.card_name == matched_name, Inventory.location == location)
+            .all()
+        )
+        location_printings.sort(
+            key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+        )
+        location_total = sum(p.total_quantity for p in location_printings)
+
         already_claimed = already_removed.get(matched_name, 0)
-        removable_floor = checked_out  # can't drop the card's total below what's checked out
-        currently_removable = max(0, group_total - already_claimed - removable_floor)
+        currently_removable = max(0, min(location_total, global_room) - already_claimed)
 
         to_remove = min(currently_removable, parsed.quantity)
 
         if to_remove > 0:
             remaining = to_remove
-            for p in printings:
+            for p in location_printings:
                 if remaining <= 0:
                     break
                 take = min(p.total_quantity, remaining)
                 p.total_quantity -= take
                 remaining -= take
+                if p.total_quantity == 0:
+                    # See assign_printing's matching comment -- an
+                    # automated drain that empties a row deletes it.
+                    db.delete(p)
             already_removed[matched_name] = already_claimed + to_remove
 
         status = "ok" if to_remove == parsed.quantity else ("partial" if to_remove > 0 else "not_found")
 
+        location_label = f"'{location}'" if location else "the unassigned-location bucket"
         if status == "partial":
             message = (
-                f"Only removed {to_remove}/{parsed.quantity} — the rest is checked out "
-                f"across decks and can't be removed until checked in."
+                f"Only removed {to_remove}/{parsed.quantity} from {location_label} — the rest isn't "
+                f"there, or is checked out across decks and can't be removed until checked in."
             )
-        elif status == "not_found" and to_remove == 0 and checked_out > 0:
-            message = f"'{matched_name}' is fully checked out ({checked_out}) — nothing available to remove."
+        elif status == "not_found" and to_remove == 0 and location_total == 0:
+            message = f"'{matched_name}' has 0 in {location_label} — nothing to remove there."
         elif status == "not_found":
-            message = f"'{matched_name}' has 0 in inventory — nothing to remove."
+            message = f"'{matched_name}' in {location_label} is fully checked out or unavailable — nothing removed."
         else:
             message = ""
 

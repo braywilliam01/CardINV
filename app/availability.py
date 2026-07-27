@@ -61,10 +61,12 @@ def _cheapest_first(rows):
 
 def get_printing_availability(db: Session, card_name: str) -> list[PrintingAvailability]:
     """
-    Every printing (and finish) of card_name with how many copies of
-    *that exact row* are still available (its own Inventory total
-    minus what's already checked out from that same row across every
-    deck), ordered cheapest-known-price first and unpriced rows last.
+    Every printing (and finish) of card_name with how many copies are
+    still available (the Inventory total for that printing+finish,
+    summed across every location — decks are location-blind, same
+    reasoning as checkout.py never threading a location through a
+    pin — minus what's already checked out across every deck), ordered
+    cheapest-known-price first and unpriced rows last.
 
     This is the draw-down order checkout.py uses for an *unpinned*
     line (no "(SET) NUM" in the pasted text — see parser.py): pull
@@ -77,6 +79,16 @@ def get_printing_availability(db: Session, card_name: str) -> list[PrintingAvail
     inv_rows = db.query(Inventory).filter(Inventory.card_name == card_name).all()
     if not inv_rows:
         return []
+
+    # Sum Inventory rows by (set_code, collector_number, finish) --
+    # the same printing+finish can now be split across several
+    # location rows (see models.py), but checkout stays location-blind,
+    # so this function's granularity is unchanged: one entry per
+    # printing+finish, location-summed.
+    total_by_printing: dict[tuple[str, str, str], int] = {}
+    for inv in inv_rows:
+        key = (inv.set_code, inv.collector_number, inv.finish)
+        total_by_printing[key] = total_by_printing.get(key, 0) + inv.total_quantity
 
     checked_out_by_printing = {
         (set_code, collector_number, finish): qty
@@ -97,17 +109,13 @@ def get_printing_availability(db: Session, card_name: str) -> list[PrintingAvail
 
     result = [
         PrintingAvailability(
-            set_code=inv.set_code,
-            collector_number=inv.collector_number,
-            finish=inv.finish,
-            available=max(
-                0,
-                inv.total_quantity
-                - checked_out_by_printing.get((inv.set_code, inv.collector_number, inv.finish), 0),
-            ),
-            price_usd=price_by_printing.get((inv.set_code, inv.collector_number, inv.finish)),
+            set_code=set_code,
+            collector_number=collector_number,
+            finish=finish,
+            available=max(0, total - checked_out_by_printing.get((set_code, collector_number, finish), 0)),
+            price_usd=price_by_printing.get((set_code, collector_number, finish)),
         )
-        for inv in inv_rows
+        for (set_code, collector_number, finish), total in total_by_printing.items()
     ]
     return _cheapest_first(result)
 
@@ -158,3 +166,97 @@ def get_assigned_printings(db: Session, card_name: str, deck_name: str) -> list[
         for r in rows
     ]
     return _cheapest_first(result)
+
+
+@dataclass
+class LocationAvailability:
+    set_code: str
+    collector_number: str
+    finish: str
+    location: str
+    available: int
+    price_usd: float | None  # None sorts last — see get_printing_availability
+
+
+def get_location_availability(db: Session, card_name: str) -> list[LocationAvailability]:
+    """
+    Every (printing, finish, location) row of card_name with how many
+    copies are actually available there — the location-granular
+    counterpart to get_printing_availability, which deliberately stays
+    location-blind for checkout's sake (decks have no location
+    syntax). This one powers Collection Search's pick list (see
+    search.py), which needs to know *where* the available copies of a
+    card actually are.
+
+    Checked-out totals are only known per printing+finish, never per
+    location (decks are location-blind — see models.py's Inventory
+    docstring), so this heuristically assumes checked-out copies came
+    from the "least specific" location first: within each
+    printing+finish group, rows are ordered "" (not yet assigned)
+    first, then alphabetically, and the group's checked-out total is
+    subtracted cumulatively down that order. This is a read-only
+    preview (nothing is committed here — nothing is checked out by
+    calling this), so a heuristic is fine; it's the same drain-order
+    convention already used by inventory_admin.assign_printing's
+    source-side drain and bulk_remove_cards.
+
+    The *returned* order is different from that subtraction order, and
+    deliberately so — don't conflate the two: real (non-empty)
+    locations sort first (alphabetically), "" (not yet assigned) sorts
+    last, with cheapest-known-price as a tiebreak within the same
+    location. Unlike get_printing_availability's cheapest-first bias
+    (which matters because checkout commits cards to a deck, so
+    protecting valuable printings is the priority), a pick list commits
+    nothing — what matters is producing a maximally *actionable* list,
+    so a row with a real location should be preferred over the
+    unassigned-location bucket whenever both could supply the same
+    card.
+    """
+    inv_rows = db.query(Inventory).filter(Inventory.card_name == card_name).all()
+    if not inv_rows:
+        return []
+
+    by_printing: dict[tuple[str, str, str], list[Inventory]] = {}
+    for inv in inv_rows:
+        key = (inv.set_code, inv.collector_number, inv.finish)
+        by_printing.setdefault(key, []).append(inv)
+
+    checked_out_by_printing = {
+        (set_code, collector_number, finish): qty
+        for set_code, collector_number, finish, qty in (
+            db.query(
+                DeckAssignment.set_code, DeckAssignment.collector_number, DeckAssignment.finish,
+                func.sum(DeckAssignment.quantity),
+            )
+            .filter(DeckAssignment.card_name == card_name)
+            .group_by(DeckAssignment.set_code, DeckAssignment.collector_number, DeckAssignment.finish)
+            .all()
+        )
+    }
+    price_by_printing = {
+        (p.set_code, p.collector_number, p.finish): p.price_usd
+        for p in db.query(CardPrice).filter(CardPrice.card_name == card_name).all()
+    }
+
+    result: list[LocationAvailability] = []
+    for (set_code, collector_number, finish), rows in by_printing.items():
+        rows = sorted(rows, key=lambda r: (r.location != "", r.location))  # "" first — absorbs checked-out first
+        remaining_checked_out = checked_out_by_printing.get((set_code, collector_number, finish), 0)
+        price_usd = price_by_printing.get((set_code, collector_number, finish))
+        for row in rows:
+            consumed = min(row.total_quantity, remaining_checked_out)
+            remaining_checked_out -= consumed
+            available = row.total_quantity - consumed
+            if available <= 0:
+                continue
+            result.append(
+                LocationAvailability(
+                    set_code=set_code, collector_number=collector_number, finish=finish,
+                    location=row.location, available=available, price_usd=price_usd,
+                )
+            )
+
+    result.sort(
+        key=lambda r: (r.location == "", r.location, r.price_usd is None, r.price_usd if r.price_usd is not None else 0)
+    )
+    return result

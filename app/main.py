@@ -47,6 +47,7 @@ from .inventory_admin import (
     delete_card,
     delete_card_group,
     assign_printing,
+    assign_location,
     get_printings_for_card,
     bulk_add_cards,
     bulk_remove_cards,
@@ -405,6 +406,18 @@ class SearchRequest(BaseModel):
     ignore_basic_lands: bool = True
 
 
+def _pick_entry_to_dict(e):
+    return {
+        "card_name": e.card_name,
+        "quantity": e.quantity,
+        "location": e.location,
+        "set_code": e.set_code,
+        "collector_number": e.collector_number,
+        "finish": e.finish,
+        "is_no_location": e.is_no_location,
+    }
+
+
 @app.post("/api/search")
 def search_collection(req: SearchRequest, db: Session = Depends(get_db)):
     result = split_by_availability(db, req.decklist_text, req.fuzzy_threshold, req.ignore_basic_lands)
@@ -413,6 +426,7 @@ def search_collection(req: SearchRequest, db: Session = Depends(get_db)):
         "missing": result.missing_lines,
         "warnings": result.warnings,
         "skipped_basic_lands": result.skipped_basic_lands,
+        "pick_list": [_pick_entry_to_dict(e) for e in result.pick_list],
     }
 
 
@@ -734,6 +748,7 @@ class AddCardRequest(BaseModel):
     set_code: str = ""
     collector_number: str = ""
     finish: str = ""
+    location: str = ""
 
 
 class AdjustQuantityRequest(BaseModel):
@@ -742,6 +757,7 @@ class AdjustQuantityRequest(BaseModel):
     set_code: str = ""
     collector_number: str = ""
     finish: str = ""
+    location: str = ""
 
 
 class AssignPrintingRequest(BaseModel):
@@ -753,12 +769,24 @@ class AssignPrintingRequest(BaseModel):
     from_finish: str | None = None
 
 
+class AssignLocationRequest(BaseModel):
+    card_name: str
+    quantity: int
+    location: str
+    set_code: str = ""
+    collector_number: str = ""
+    finish: str = ""
+    from_location: str = ""
+
+
 def _printing_to_dict(p):
     return {
         "set_code": p.set_code,
         "collector_number": p.collector_number,
         "finish": p.finish,
         "is_finish_unspecified": p.is_finish_unspecified,
+        "location": p.location,
+        "is_no_location": p.is_no_location,
         "total_quantity": p.total_quantity,
         "is_unresolved": p.is_unresolved,
         "price_usd": p.price_usd,
@@ -796,6 +824,8 @@ def get_inventory(
     sort_dir: str = "asc",
     unresolved_only: bool = False,
     checked_out_only: bool = False,
+    no_location_only: bool = False,
+    location: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Paginated, filtered, and sorted for the Manage Collection table —
@@ -819,6 +849,8 @@ def get_inventory(
         sort_dir=sort_dir,
         unresolved_only=unresolved_only,
         checked_out_only=checked_out_only,
+        no_location_only=no_location_only,
+        location=location,
     )
     total_pages = max(1, -(-result.total_count // page_size))  # ceil division
     return {
@@ -842,7 +874,9 @@ def get_inventory_names(db: Session = Depends(get_db)):
 @app.post("/api/inventory")
 def create_card(req: AddCardRequest, db: Session = Depends(get_db)):
     try:
-        row = add_card(db, req.card_name, req.total_quantity, req.set_code, req.collector_number, req.finish)
+        row = add_card(
+            db, req.card_name, req.total_quantity, req.set_code, req.collector_number, req.finish, req.location,
+        )
     except DuplicateCardError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -884,14 +918,46 @@ def assign_printing_endpoint(req: AssignPrintingRequest, db: Session = Depends(g
     return _row_to_dict(row)
 
 
+@app.post("/api/inventory/assign-location")
+def assign_location_endpoint(req: AssignLocationRequest, db: Session = Depends(get_db)):
+    """Relocate workflow: moves `quantity` copies of card_name (at a
+    given, possibly-unresolved printing+finish) from `from_location`
+    (default "" — not yet assigned) to `location`. See
+    inventory_admin.assign_location."""
+    try:
+        row = assign_location(
+            db, req.card_name, req.quantity, req.location, req.set_code, req.collector_number,
+            req.finish, from_location=req.from_location,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _row_to_dict(row)
+
+
+@app.get("/api/inventory/locations")
+def get_inventory_locations(db: Session = Depends(get_db)):
+    """Every distinct assigned location currently in use, unpaginated —
+    powers the Location autocomplete datalist across Manage Collection
+    (Add a card, Bulk add/remove, filter, relocate)."""
+    rows = (
+        db.query(Inventory.location)
+        .filter(Inventory.location != "")
+        .distinct()
+        .order_by(Inventory.location.asc())
+        .all()
+    )
+    return {"locations": [r.location for r in rows]}
+
+
 @app.patch("/api/inventory")
 def update_card_quantity(req: AdjustQuantityRequest, db: Session = Depends(get_db)):
     """Sets one printing's total_quantity — set_code/collector_number/
-    finish default to the unresolved/unspecified bucket, which is also
-    the only row a simple (not-yet-expanded) card has."""
+    finish/location default to the unresolved/unspecified/unassigned
+    bucket, which is also the only row a simple (not-yet-expanded) card
+    has."""
     try:
         row = adjust_quantity(
-            db, req.card_name, req.total_quantity, req.set_code, req.collector_number, req.finish
+            db, req.card_name, req.total_quantity, req.set_code, req.collector_number, req.finish, req.location,
         )
     except BlockedDeleteError as e:
         raise HTTPException(
@@ -932,13 +998,15 @@ def remove_card_printing(
     set_code: str = "",
     collector_number: str = "",
     finish: str = "",
+    location: str = "",
     force: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Deletes just one printing+finish row — used from the expanded per-printing view."""
+    """Deletes just one printing+finish+location row — used from the expanded per-printing view."""
     try:
         delete_card(
-            db, card_name, set_code=set_code, collector_number=collector_number, finish=finish, force=force
+            db, card_name, set_code=set_code, collector_number=collector_number,
+            finish=finish, location=location, force=force,
         )
     except BlockedDeleteError as e:
         raise HTTPException(
@@ -955,12 +1023,14 @@ def remove_card_printing(
         "set_code": set_code,
         "collector_number": collector_number,
         "finish": finish,
+        "location": location,
         "force": force,
     }
 
 
 class BulkInventoryRequest(BaseModel):
     decklist_text: str
+    location: str
     ignore_basic_lands: bool = True
 
 
@@ -974,13 +1044,17 @@ def _serialize_bulk(result):
 
 @app.post("/api/inventory/bulk-add")
 def bulk_add(req: BulkInventoryRequest, db: Session = Depends(get_db)):
-    result = bulk_add_cards(db, req.decklist_text, req.ignore_basic_lands)
+    if not req.location.strip():
+        raise HTTPException(status_code=400, detail="Location is required.")
+    result = bulk_add_cards(db, req.decklist_text, req.location, req.ignore_basic_lands)
     return _serialize_bulk(result)
 
 
 @app.post("/api/inventory/bulk-remove")
 def bulk_remove(req: BulkInventoryRequest, db: Session = Depends(get_db)):
-    result = bulk_remove_cards(db, req.decklist_text, req.ignore_basic_lands)
+    if not req.location.strip():
+        raise HTTPException(status_code=400, detail="Location is required.")
+    result = bulk_remove_cards(db, req.decklist_text, req.location, req.ignore_basic_lands)
     return _serialize_bulk(result)
 
 

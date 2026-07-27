@@ -26,11 +26,29 @@ data behind a login.
   known printing with no recorded finish sits in its own "unspecified"
   bucket, until you assign them via Manage Collection's fix-up
   workflow — nothing is ever guessed.
+- **Location tracking** — inventory can also be split by physical storage
+  location (e.g. "Box 3", "Binder A"): the same card, printing, and finish
+  can be tracked separately across two locations, the same independent-axis
+  treatment already given to finish. Copies with no location recorded sit
+  in a "not yet assigned" bucket — filterable and fixable from Manage
+  Collection the same way unresolved printings and unspecified finishes
+  are, including relocating already-assigned copies from one location to
+  another without touching quantity anywhere else.
 - **Manage Collection** — a grouped table (one row per card name,
-  expandable to its individual printings/finishes), quantity edits and
-  price lookups at either the card or printing level, and fix-up flows
-  for resolving unresolved copies to a specific printing and assigning
-  a finish to a printing that doesn't have one recorded yet.
+  expandable to its individual printings/finishes/locations), quantity
+  edits and price lookups at either the card or printing level, and
+  fix-up flows for resolving unresolved copies to a specific printing,
+  assigning a finish to a printing that doesn't have one recorded yet,
+  and assigning or relocating a location.
+- **Bulk add/remove** — paste a plain list of cards (one per line, e.g.
+  "2 Lightning Bolt") to add or remove quantities in bulk, all landing
+  in (or drawn from) one required storage location per call — the same
+  paste format Collection Search and Deck Checkout use elsewhere. A
+  pasted line carries no set/number/finish, so Add always lands in the
+  unresolved/unspecified bucket at that location and Remove only pulls
+  from that location's stock, never below what's checked out to a deck.
+  This is the everyday way to keep quantities and locations current; see
+  Bulk Update below for wholesale ManaBox-catalog replacement instead.
 - **Per-printing, per-finish pricing** — Magic prices come from
   Scryfall's full per-printing bulk data; Pokémon prices from TCGdex.
   Every finish a printing has (Nonfoil/Foil for Magic; Normal/Holofoil/
@@ -41,7 +59,11 @@ data behind a login.
   estimated prices are flagged as such everywhere they appear.
 - **Collection Search** — paste a decklist, get it split into "available"
   and "missing" outputs based on current inventory, with fuzzy matching
-  for typos (Magic only — see Limitations below).
+  for typos (Magic only — see Limitations below). A third output, the
+  **pick list**, groups everything in "available" by storage location so
+  you know exactly which box to go pull it from — a card split across two
+  locations shows up as two lines, and copies with no location recorded
+  get their own called-out group instead of silently blending in.
 - **Decks** — one tab for everything deck-related: granular per-card
   add/remove, bulk paste-a-decklist editing, favoriting, renaming, and
   deleting a deck (which checks its cards back into available inventory).
@@ -58,7 +80,8 @@ data behind a login.
   Foil column, if present, is read too — foil and non-foil copies of the
   same printing land as separate tracked lines instead of being merged.
   Deck assignments are always preserved, with warnings surfaced for any
-  assignment left short after the reconciliation.
+  assignment left short after the reconciliation. Predates location
+  tracking and stays unaware of it — see Limitations below.
 - **Card Search** — fuzzy lookup for any card's full printed info (image,
   rules text, prices, legalities) — Scryfall for Magic, TCGdex for
   Pokémon — showing exactly how many of that specific printing you own
@@ -85,6 +108,14 @@ data behind a login.
   fall back to substring matching plus local ranking.
 - "Ignore Basic Lands" and the ManaBox CSV bulk importer are Magic-specific
   concepts with no Pokémon equivalent — they're hidden in Pokémon mode.
+- The ManaBox CSV bulk importer (Bulk Update) predates location tracking
+  and doesn't read or write it — everything it touches lands with no
+  location assigned, and reconciling a card whose copies are already
+  split across locations may only account for one of those rows rather
+  than all of them. Bulk add/remove (see Features above) is
+  location-aware and is the recommended way to add/remove quantities
+  day to day; Bulk Update remains for wholesale ManaBox-catalog
+  replacement, where location precision isn't the point.
 - Registration is open to anyone who can reach the app — there's no invite
   code, approval step, or login rate limiting. Fine behind your own
   network or a tunnel you control; put access control in front of it

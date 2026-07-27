@@ -82,17 +82,20 @@ def _draw_down_checkout(
 
     if set_code or collector_number:
         key = (card_name, set_code, collector_number, "")
-        inv = (
-            db.query(Inventory)
+        # Summed across every location -- a pinned line has no
+        # location syntax, so decks stay location-blind here too (the
+        # same printing+finish can now be split across several
+        # location rows; see models.py).
+        total = (
+            db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
             .filter(
                 Inventory.card_name == card_name,
                 Inventory.set_code == set_code,
                 Inventory.collector_number == collector_number,
                 Inventory.finish == "",
             )
-            .one_or_none()
+            .scalar()
         )
-        total = inv.total_quantity if inv else 0
         checked_out = (
             db.query(func.coalesce(func.sum(DeckAssignment.quantity), 0))
             .filter(
@@ -438,20 +441,21 @@ def _all_current_assignments(db: Session, card_name: str, deck_name: str) -> dic
 
 def _printing_growable(db: Session, card_name: str, set_code: str, collector_number: str) -> int:
     """How many more of a *pinned* printing (finish="", same reasoning
-    as _current_assignments_by_printing) could be checked out."""
+    as _current_assignments_by_printing) could be checked out. Summed
+    across every location, same reasoning as _draw_down_checkout's
+    pinned branch -- a pin has no location syntax."""
     if is_basic_land(card_name):
         return 10**9
-    inv = (
-        db.query(Inventory)
+    total = (
+        db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
         .filter(
             Inventory.card_name == card_name,
             Inventory.set_code == set_code,
             Inventory.collector_number == collector_number,
             Inventory.finish == "",
         )
-        .one_or_none()
+        .scalar()
     )
-    total = inv.total_quantity if inv else 0
     checked_out = (
         db.query(func.coalesce(func.sum(DeckAssignment.quantity), 0))
         .filter(
@@ -718,10 +722,14 @@ def get_deck_cards(db: Session, deck_name: str) -> list[dict]:
 
     card_names = list({a.card_name for a in assignments})
 
-    inv_by_printing = {
-        (row.card_name, row.set_code, row.collector_number, row.finish): row.total_quantity
-        for row in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all()
-    }
+    # Accumulated (not last-write-wins) -- the same printing+finish can
+    # now be split across several location rows (see models.py), and
+    # this deck view stays location-blind, so every location's
+    # quantity needs to contribute to the total.
+    inv_by_printing: dict[tuple, int] = {}
+    for row in db.query(Inventory).filter(Inventory.card_name.in_(card_names)).all():
+        key = (row.card_name, row.set_code, row.collector_number, row.finish)
+        inv_by_printing[key] = inv_by_printing.get(key, 0) + row.total_quantity
 
     checked_out_by_printing: dict[tuple, int] = {}
     for a in db.query(DeckAssignment).filter(DeckAssignment.card_name.in_(card_names)).all():

@@ -1,18 +1,19 @@
-"""app/schema_migrations.py's finish-column migration -- the riskiest
-piece of the finish-tracking feature, since it recreates tables (PK
-change) on real per-user SQLite files with no Alembic/versioning.
-Builds a pre-migration-shape database by hand (raw SQL, not via
-models.py, which already has `finish`) to simulate a real production
-file predating this change."""
+"""app/schema_migrations.py's finish-column and location-column
+migrations -- the riskiest piece of both features, since they recreate
+tables (PK change) on real per-user SQLite files with no
+Alembic/versioning. Builds pre-migration-shape databases by hand (raw
+SQL, not via models.py, which already has both columns) to simulate
+real production files predating each change."""
 import sqlite3
 
 from sqlalchemy import create_engine, text
 
 from app.database import Base
-from app.schema_migrations import migrate_finish_column
+from app.schema_migrations import migrate_finish_column, migrate_location_column
 
 
 def _make_pre_migration_db(path: str) -> None:
+    """Predates *both* finish and location -- the double-stale case."""
     conn = sqlite3.connect(path)
     conn.executescript(
         """
@@ -70,6 +71,31 @@ def _make_pre_migration_db(path: str) -> None:
 
         INSERT INTO deck_assignments (card_name, deck_name, set_code, collector_number, quantity)
         VALUES ('Lightning Bolt', 'My Deck', 'CLB', '304', 2);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _make_pre_location_db(path: str) -> None:
+    """Today's *current* production shape: finish present, location
+    missing -- the single-column-missing case this migration exists
+    to handle in isolation from the finish migration."""
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE inventory (
+            card_name VARCHAR NOT NULL,
+            set_code VARCHAR NOT NULL DEFAULT '',
+            collector_number VARCHAR NOT NULL DEFAULT '',
+            finish VARCHAR NOT NULL DEFAULT '',
+            total_quantity INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (card_name, set_code, collector_number, finish)
+        );
+        CREATE INDEX ix_inventory_card_name ON inventory (card_name);
+
+        INSERT INTO inventory (card_name, set_code, collector_number, finish, total_quantity)
+        VALUES ('Lightning Bolt', 'CLB', '304', '', 3), ('Sol Ring', '', '', '', 1);
         """
     )
     conn.commit()
@@ -156,3 +182,96 @@ def test_unresolved_and_unspecified_finish_axes_are_independent(tmp_path):
             for r in conn.execute(text("SELECT card_name, set_code, collector_number FROM inventory")).fetchall()
         }
         assert rows == {("Lightning Bolt", False), ("Sol Ring", True)}
+
+
+def test_location_migration_backfills_and_preserves_data(tmp_path):
+    db_path = tmp_path / "pre_location.db"
+    _make_pre_location_db(str(db_path))
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+
+    migrate_location_column(engine)
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT card_name, set_code, collector_number, finish, location, total_quantity FROM inventory ORDER BY card_name")
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [
+            ("Lightning Bolt", "CLB", "304", "", "", 3),
+            ("Sol Ring", "", "", "", "", 1),
+        ]
+        index_names = {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='index'")).fetchall()
+        }
+        assert "ix_inventory_card_name" in index_names
+
+
+def test_location_migration_is_idempotent(tmp_path):
+    db_path = tmp_path / "pre_location.db"
+    _make_pre_location_db(str(db_path))
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+
+    migrate_location_column(engine)
+    migrate_location_column(engine)  # must be a safe no-op, not raise or duplicate rows
+
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM inventory")).scalar() == 2
+
+
+def test_location_migration_on_freshly_created_schema_is_noop(tmp_path):
+    """A file created via create_all() already has `location` (it's in
+    models.py) -- the 'table doesn't need migrating' path."""
+    db_path = tmp_path / "fresh.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+
+    migrate_location_column(engine)  # must not raise
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(inventory)")).fetchall()}
+        assert "location" in columns
+
+
+def test_double_stale_file_migrates_regardless_of_call_order(tmp_path):
+    """A per-user file that predates BOTH finish and location (i.e.
+    today's _make_pre_migration_db shape, missing finish entirely)
+    must end up with both columns backfilled no matter which migration
+    runs first -- see _recreate_table_adding_new_columns's docstring:
+    each rebuild backfills every column missing from the live table,
+    not just the one its caller was checking for, so whichever
+    migration hits a double-stale table first picks up both columns in
+    one rebuild and the second migration then no-ops."""
+    db_path = tmp_path / "double_stale_finish_then_location.db"
+    _make_pre_migration_db(str(db_path))
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+
+    migrate_finish_column(engine)
+    migrate_location_column(engine)
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(inventory)")).fetchall()}
+        assert {"finish", "location"} <= columns
+        rows = conn.execute(
+            text("SELECT card_name, finish, location FROM inventory ORDER BY card_name")
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [
+            ("Lightning Bolt", "", ""),
+            ("Sol Ring", "", ""),
+        ]
+
+    db_path2 = tmp_path / "double_stale_location_then_finish.db"
+    _make_pre_migration_db(str(db_path2))
+    engine2 = create_engine(f"sqlite:///{db_path2}", connect_args={"check_same_thread": False})
+
+    migrate_location_column(engine2)
+    migrate_finish_column(engine2)
+
+    with engine2.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(inventory)")).fetchall()}
+        assert {"finish", "location"} <= columns
+        rows = conn.execute(
+            text("SELECT card_name, finish, location FROM inventory ORDER BY card_name")
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [
+            ("Lightning Bolt", "", ""),
+            ("Sol Ring", "", ""),
+        ]

@@ -65,6 +65,11 @@ data behind a login.
   (across every finish) and every price variant it has, each with its
   own one-click "Add" — adding a Reverse Holofoil copy and a Holofoil
   copy of the same printing creates two independent lines, not one.
+- **AI agent access** — issue a personal API key from Settings → API Keys
+  (up to 2 per account) so an AI agent can read your collection and decks
+  read-only — never edit them — e.g. to suggest a deck build from what you
+  actually own. A bundled `mcp_server.py` wraps this as an MCP server for
+  tools like Claude Desktop/Code — see AI agent access below.
 
 ## Limitations
 
@@ -138,6 +143,35 @@ chmod +x /tmp/tailwindcss
 (swap `tailwindcss-linux-x64` for your platform's binary name from the
 [releases page](https://github.com/tailwindlabs/tailwindcss/releases/latest)
 if you're not on Linux x64)
+
+## AI agent access
+
+An AI agent (e.g. Claude) can read a user's collection and decks — never
+edit them — via a personal API key, so it can suggest a deck build from
+what's actually available.
+
+1. Log in, then Settings → API Keys → give it a name → Create Key. The
+   token is shown once, right in that response — copy it immediately,
+   since only its hash is ever stored server-side and it can't be shown
+   again. Each account is capped at 2 keys at a time; revoke one from the
+   same panel to free up a slot.
+2. Install the MCP wrapper's one extra dependency (everything else it
+   needs is already in `requirements.txt`):
+   ```bash
+   pip install -r requirements-mcp.txt
+   ```
+3. Point `mcp_server.py` at your running instance and the token from step
+   1, then wire it into your MCP client (Claude Desktop/Code) as a
+   stdio-launched server:
+   ```bash
+   CARDINV_BASE_URL=http://localhost:8000 CARDINV_API_KEY=cardinv_... \
+     python mcp_server.py
+   ```
+
+It exposes two tools, `list_collection` and `list_decks`, each scoped to
+whichever `game` ("mtg" or "pokemon") you pass — defaults to "mtg" if
+omitted, same as a brand-new login. See `DEPLOY.md` for issuing keys
+headless via curl and running this against a real deployment.
 
 ## Deployment
 

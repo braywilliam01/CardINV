@@ -1,13 +1,26 @@
+import secrets
 from datetime import datetime, timezone
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session, sessionmaker
 
-from .auth_models import User
+from .auth_models import User, ApiKey
 from .database import get_user_engine, get_auth_db, is_valid_username, GAMES, DEFAULT_GAME
 
 MIN_PASSWORD_LENGTH = 8
+
+# Issued tokens look like "cardinv_<key_id>_<secret>". key_id is a
+# short, non-secret public identifier (indexed, looked up directly) so
+# authenticating a request never has to bcrypt-compare against every
+# stored key — only the one row matching its key_id.
+API_KEY_PREFIX = "cardinv"
+
+# Personal/family-scale app, one browser session per person — two keys
+# comfortably covers "one agent at a time plus one being rotated in",
+# without letting a single account mint an unbounded number of
+# standing credentials.
+MAX_API_KEYS_PER_USER = 2
 
 # A precomputed hash checked against when a login's username doesn't
 # exist at all, so authenticate_user always pays bcrypt's (deliberately
@@ -145,6 +158,127 @@ def get_db(username: str = Depends(get_current_username), game: str = Depends(ge
     `db: Session = Depends(get_db)` is scoped to both without needing
     to change its own logic.
     """
+    engine = get_user_engine(username, game)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------
+# API keys — long-lived credentials for non-browser callers (e.g. an AI
+# agent reading a user's collection), as a parallel path alongside the
+# session-cookie auth above rather than a change to it.
+# ---------------------------------------------------------------------
+
+
+def create_api_key(auth_db: Session, username: str, name: str) -> tuple[ApiKey, str]:
+    """Generates a new token, stores only its bcrypt hash, and returns
+    the row alongside the raw token — the only time that raw value is
+    ever available; callers must show it to the user immediately and
+    not rely on retrieving it again later."""
+    name = name.strip()
+    if not name:
+        raise ValueError("Key name is required.")
+
+    existing_count = auth_db.query(ApiKey).filter(ApiKey.username == username).count()
+    if existing_count >= MAX_API_KEYS_PER_USER:
+        raise ValueError(
+            f"You already have {MAX_API_KEYS_PER_USER} API keys — revoke one before creating another."
+        )
+
+    # token_hex is drawn from hex digits only, so it can never itself
+    # contain the "_" separator used to split the issued token back
+    # apart in get_agent_username.
+    key_id = secrets.token_hex(6)
+    while auth_db.query(ApiKey).filter(ApiKey.key_id == key_id).one_or_none() is not None:
+        key_id = secrets.token_hex(6)
+
+    secret = secrets.token_urlsafe(32)
+    token = f"{API_KEY_PREFIX}_{key_id}_{secret}"
+
+    api_key = ApiKey(
+        username=username,
+        name=name,
+        key_id=key_id,
+        key_hash=hash_password(secret),
+        created_at=datetime.now(timezone.utc),
+    )
+    auth_db.add(api_key)
+    auth_db.commit()
+    auth_db.refresh(api_key)
+    return api_key, token
+
+
+def list_api_keys(auth_db: Session, username: str) -> list[ApiKey]:
+    return (
+        auth_db.query(ApiKey)
+        .filter(ApiKey.username == username)
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
+
+
+def revoke_api_key(auth_db: Session, username: str, key_id: str) -> None:
+    """Deletes a key — only the owning user can revoke their own key,
+    so a key_id belonging to someone else is reported the same as one
+    that doesn't exist at all, rather than leaking whether it does."""
+    api_key = (
+        auth_db.query(ApiKey)
+        .filter(ApiKey.key_id == key_id, ApiKey.username == username)
+        .one_or_none()
+    )
+    if api_key is None:
+        raise ValueError("API key not found.")
+    auth_db.delete(api_key)
+    auth_db.commit()
+
+
+def get_agent_username(request: Request, auth_db: Session = Depends(get_auth_db)) -> str:
+    """Authenticates an agent request via `Authorization: Bearer
+    <token>`, the API-key equivalent of get_current_username's session
+    cookie check. Deliberately returns the same 401 detail for every
+    failure mode (missing header, malformed token, unknown key_id,
+    wrong secret) so a caller can't distinguish "no such key" from
+    "wrong secret" by response content."""
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    invalid = HTTPException(status_code=401, detail="Invalid or missing API key.")
+    if scheme.lower() != "bearer" or not token:
+        raise invalid
+
+    parts = token.split("_", 2)
+    if len(parts) != 3 or parts[0] != API_KEY_PREFIX:
+        raise invalid
+
+    _, key_id, secret = parts
+    api_key = auth_db.query(ApiKey).filter(ApiKey.key_id == key_id).one_or_none()
+    if api_key is None or not verify_password(secret, api_key.key_hash):
+        raise invalid
+
+    api_key.last_used_at = datetime.now(timezone.utc)
+    auth_db.commit()
+    return api_key.username
+
+
+def get_agent_game(game: str = DEFAULT_GAME) -> str:
+    """Query-param equivalent of get_current_game — an agent request
+    has no browser session to read an active game from, so it names
+    one explicitly (defaulting to 'mtg', same as a brand-new session
+    would)."""
+    if game not in GAMES:
+        raise HTTPException(status_code=400, detail=f"Unknown game: '{game}' (expected one of {GAMES})")
+    return game
+
+
+def get_agent_db(username: str = Depends(get_agent_username), game: str = Depends(get_agent_game)):
+    """Agent-auth equivalent of get_db — identical body, just sourced
+    from an API key instead of a session cookie. Kept as a separate
+    dependency chain rather than parameterizing get_db, so a bug in
+    agent-token handling can never accidentally widen what a session
+    cookie can reach, or vice versa."""
     engine = get_user_engine(username, game)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()

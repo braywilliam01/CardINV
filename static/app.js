@@ -1,6 +1,7 @@
 const API_BASE = "/api";
 const DEFAULT_APP_TAB = "manage";
 const GAME_LABELS = { mtg: "Magic: The Gathering", pokemon: "Pokémon" };
+const MAX_API_KEYS = 2; // mirrors auth.MAX_API_KEYS_PER_USER — server is the real enforcement, this just disables the form early
 
 let currentGame = "mtg";
 
@@ -2279,6 +2280,10 @@ function loadSettingsView() {
   document.getElementById("settings-confirm-password").value = "";
   document.getElementById("settings-password-msg").textContent = "";
 
+  document.getElementById("api-key-reveal").classList.add("hidden");
+  document.getElementById("api-keys-msg").textContent = "";
+  loadApiKeysList();
+
   const adminPanel = document.getElementById("settings-admin-panel");
   adminPanel.classList.toggle("hidden", !isAdmin);
   if (isAdmin) loadAdminUsersList();
@@ -2352,6 +2357,120 @@ async function loadAdminUsersList() {
     });
   } catch (err) {
     container.innerHTML = `<div class="text-sm text-rose-400">Failed to load users: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function loadApiKeysList() {
+  const container = document.getElementById("api-keys-list");
+  const createBtn = document.getElementById("api-key-create-btn");
+  const nameInput = document.getElementById("api-key-name-input");
+  container.innerHTML = `<div class="text-sm text-slate-400">Loading...</div>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/api-keys`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    container.innerHTML = "";
+    if (data.api_keys.length === 0) {
+      container.innerHTML = `<div class="text-sm text-slate-500">No API keys yet.</div>`;
+    }
+    data.api_keys.forEach((k) => {
+      const created = new Date(k.created_at).toLocaleDateString();
+      const lastUsed = k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never";
+      const row = document.createElement("div");
+      row.className = "flex items-center justify-between gap-2 bg-slate-800 rounded-lg px-3 py-2";
+      row.innerHTML = `
+        <div class="text-sm">
+          <div class="text-slate-100">${escapeHtml(k.name)}</div>
+          <div class="text-xs text-slate-500">Created ${created} · Last used ${lastUsed}</div>
+        </div>
+        <button class="api-key-revoke-btn bg-rose-950 hover:bg-rose-900 text-rose-400 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap">
+          Revoke
+        </button>
+      `;
+      row.querySelector(".api-key-revoke-btn").addEventListener("click", () => revokeApiKey(k.id, k.name));
+      container.appendChild(row);
+    });
+
+    const atLimit = data.api_keys.length >= MAX_API_KEYS;
+    createBtn.disabled = atLimit;
+    nameInput.disabled = atLimit;
+    nameInput.placeholder = atLimit
+      ? `Limit of ${MAX_API_KEYS} keys reached — revoke one first`
+      : "Key name, e.g. Claude Desktop";
+  } catch (err) {
+    container.innerHTML = `<div class="text-sm text-rose-400">Failed to load API keys: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+document.getElementById("api-key-create-btn").addEventListener("click", async () => {
+  const nameInput = document.getElementById("api-key-name-input");
+  const msgEl = document.getElementById("api-keys-msg");
+  const btn = document.getElementById("api-key-create-btn");
+  const name = nameInput.value.trim();
+
+  if (!name) {
+    setMsg(msgEl, "Give the key a name first.");
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Creating...";
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/api-keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    nameInput.value = "";
+    msgEl.textContent = "";
+    document.getElementById("api-key-reveal-token").value = data.token;
+    document.getElementById("api-key-reveal").classList.remove("hidden");
+  } catch (err) {
+    setMsg(msgEl, err.message);
+  } finally {
+    btn.textContent = originalText;
+    // Re-derives disabled/placeholder state from the server's own key
+    // count (rather than unconditionally re-enabling here), so a
+    // create that failed because the 2-key limit was already reached
+    // leaves the button correctly disabled instead of clickable again.
+    await loadApiKeysList();
+  }
+});
+
+document.getElementById("api-key-copy-btn").addEventListener("click", async () => {
+  const tokenInput = document.getElementById("api-key-reveal-token");
+  const btn = document.getElementById("api-key-copy-btn");
+  tokenInput.select();
+  try {
+    await navigator.clipboard.writeText(tokenInput.value);
+    const originalText = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = originalText; }, 1500);
+  } catch (err) {
+    // Clipboard API unavailable (e.g. non-HTTPS context) -- the token
+    // is already selected above, so the user can still copy manually.
+  }
+});
+
+async function revokeApiKey(keyId, keyName) {
+  if (!confirm(`Revoke API key '${keyName}'? Anything using it will stop working immediately.`)) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/api-keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+
+    document.getElementById("api-key-reveal").classList.add("hidden");
+    await loadApiKeysList();
+  } catch (err) {
+    alert(`Failed to revoke key: ${err.message}`);
   }
 }
 

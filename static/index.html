@@ -208,6 +208,36 @@
       <div id="settings-password-msg" class="text-sm mt-2" aria-live="polite"></div>
     </div>
 
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
+      <h2 class="font-semibold mb-1 text-sm text-slate-300">API Keys</h2>
+      <p class="text-xs text-slate-500 mb-3">
+        Let an AI agent read your collection and decks (never edit them) — e.g. to suggest a deck
+        build from what you already own. Up to 2 keys at a time.
+      </p>
+
+      <div id="api-key-reveal" class="hidden bg-slate-800 border border-emerald-700 rounded-lg p-3 mb-3">
+        <div class="text-xs text-emerald-400 mb-1">Copy this token now — it won't be shown again.</div>
+        <div class="flex items-center gap-2">
+          <input id="api-key-reveal-token" type="text" readonly
+            class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-200">
+          <button id="api-key-copy-btn" type="button" class="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap">
+            Copy
+          </button>
+        </div>
+      </div>
+
+      <div id="api-keys-list" class="space-y-2 mb-3"></div>
+
+      <div class="flex items-center gap-2">
+        <input id="api-key-name-input" type="text" placeholder="Key name, e.g. Claude Desktop"
+          class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed">
+        <button id="api-key-create-btn" class="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap">
+          Create Key
+        </button>
+      </div>
+      <div id="api-keys-msg" class="text-sm mt-2" aria-live="polite"></div>
+    </div>
+
     <div id="settings-admin-panel" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4">
       <h2 class="font-semibold mb-3 text-sm text-slate-300">Manage Users</h2>
       <div id="settings-users-list" class="space-y-2"></div>

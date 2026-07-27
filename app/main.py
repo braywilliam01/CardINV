@@ -27,6 +27,11 @@ from .auth import (
     change_password,
     admin_reset_password,
     list_users,
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
+    get_agent_db,
+    get_agent_username,
 )
 from .auth_models import User
 from .rate_limit import RateLimiter, get_client_ip
@@ -102,6 +107,13 @@ _register_rate_limiter = RateLimiter(max_requests=5, window_seconds=3600)
 # considerate, and this also just guards against one person's rapid
 # (accidental or scripted) searching hammering this app's own server.
 _card_lookup_rate_limiter = RateLimiter(max_requests=30, window_seconds=60)
+
+# Guards /api/agent/* — keyed by the caller's API key_id rather than IP
+# (see get_client_ip's docstring on why IP is the right key for
+# login/register instead): a hosted agent's IP isn't a meaningful
+# per-caller signal the way a browser's is, but its key_id always
+# identifies exactly one caller.
+_agent_rate_limiter = RateLimiter(max_requests=60, window_seconds=60)
 
 app.add_middleware(
     SessionMiddleware,
@@ -284,6 +296,69 @@ def auth_change_password(
 
 
 # ---------------------------------------------------------------------
+# API keys — long-lived tokens a user can hand to an external caller
+# (e.g. an AI agent via /api/agent/*) instead of their password. These
+# management routes themselves stay behind the normal session cookie —
+# only the agent-facing routes below accept a bearer token.
+# ---------------------------------------------------------------------
+class CreateApiKeyRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/auth/api-keys")
+def auth_create_api_key(
+    req: CreateApiKeyRequest,
+    username: str = Depends(get_current_username),
+    auth_db: Session = Depends(get_auth_db),
+):
+    """Returns the raw token exactly once — the server only ever
+    stores its hash, so it can't be shown again after this response."""
+    try:
+        api_key, token = create_api_key(auth_db, username, req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "id": api_key.key_id,
+        "name": api_key.name,
+        "token": token,
+        "created_at": api_key.created_at.isoformat(),
+    }
+
+
+@app.get("/api/auth/api-keys")
+def auth_list_api_keys(
+    username: str = Depends(get_current_username), auth_db: Session = Depends(get_auth_db)
+):
+    """Metadata only — never returns a token or its hash, only enough
+    to let a user recognize and manage keys they already issued."""
+    keys = list_api_keys(auth_db, username)
+    return {
+        "api_keys": [
+            {
+                "id": k.key_id,
+                "name": k.name,
+                "created_at": k.created_at.isoformat(),
+                "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            }
+            for k in keys
+        ]
+    }
+
+
+@app.delete("/api/auth/api-keys/{key_id}")
+def auth_revoke_api_key(
+    key_id: str,
+    username: str = Depends(get_current_username),
+    auth_db: Session = Depends(get_auth_db),
+):
+    try:
+        revoke_api_key(auth_db, username, key_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"revoked": key_id}
+
+
+# ---------------------------------------------------------------------
 # Admin — user management. Every route here requires get_current_admin,
 # which 403s anyone whose account isn't flagged is_admin.
 # ---------------------------------------------------------------------
@@ -447,6 +522,54 @@ def deck_delete(deck_name: str, db: Session = Depends(get_db)):
     except DeckNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"deleted": deck_name, "cards_checked_in": checked_in}
+
+
+# ---------------------------------------------------------------------
+# Agent API — read-only endpoints for external callers (e.g. an AI
+# agent suggesting deck builds) authenticated via an API key
+# (Depends(get_agent_db)) instead of a browser session. Deliberately
+# GET-only: no mutation route in this app is ever wired to an agent
+# credential, so a leaked key can only read a collection, never alter
+# it.
+# ---------------------------------------------------------------------
+@app.get("/api/agent/collection")
+def agent_collection(
+    db: Session = Depends(get_agent_db),
+    key_owner: str = Depends(get_agent_username),
+):
+    """Every owned card, unpaginated — an agent needs the whole
+    picture to reason about what's available for a new deck, not one
+    page of it the way the Manage Collection UI does. Reuses the same
+    aggregation query as GET /api/inventory (name, quantity, per-
+    printing breakdown, checked-out/available, price), just without
+    that route's page_size cap."""
+    _agent_rate_limiter.check(key_owner)
+    result = list_inventory(db, page=1, page_size=1_000_000, sort_by="name")
+    return {"cards": [_row_to_dict(r) for r in result.rows], "total_count": result.total_count}
+
+
+@app.get("/api/agent/decks")
+def agent_decks(
+    db: Session = Depends(get_agent_db),
+    key_owner: str = Depends(get_agent_username),
+):
+    """Existing decks and their contents, read-only — lets an agent
+    see what's already built so it can avoid suggesting a duplicate of
+    a deck that exists already."""
+    _agent_rate_limiter.check(key_owner)
+    deck_names = sorted(r.deck_name for r in db.query(DeckAssignment.deck_name).distinct().all())
+    decks = []
+    for deck_name in deck_names:
+        meta = get_deck_meta(db, deck_name)
+        decks.append(
+            {
+                "deck_name": deck_name,
+                "is_favorite": meta["is_favorite"],
+                "last_modified": meta["last_modified"],
+                "cards": get_deck_cards(db, deck_name),
+            }
+        )
+    return {"decks": decks}
 
 
 # ---------------------------------------------------------------------

@@ -6,5 +6,4 @@ data/
 backups/*.db
 seed-data/*.csv
 .env
-scripts/
 .pytest_cache/

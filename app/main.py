@@ -50,7 +50,9 @@ from .inventory_admin import (
     assign_location,
     get_printings_for_card,
     bulk_add_cards,
+    bulk_add_cards_csv,
     bulk_remove_cards,
+    bulk_remove_cards_csv,
     get_owned_quantity,
     add_one_copy,
     BlockedDeleteError,
@@ -1055,6 +1057,58 @@ def bulk_remove(req: BulkInventoryRequest, db: Session = Depends(get_db)):
     if not req.location.strip():
         raise HTTPException(status_code=400, detail="Location is required.")
     result = bulk_remove_cards(db, req.decklist_text, req.location, req.ignore_basic_lands)
+    return _serialize_bulk(result)
+
+
+def _read_bulk_csv_upload(file: UploadFile) -> str:
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv.")
+    raw_bytes = file.file.read()
+    try:
+        return raw_bytes.decode("utf-8-sig")  # utf-8-sig handles a BOM if present
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Could not decode file as UTF-8 CSV.")
+
+
+@app.post("/api/inventory/bulk-add-csv")
+def bulk_add_csv(
+    file: UploadFile = File(...),
+    location: str = Form(...),
+    ignore_basic_lands: bool = Form(True),
+    db: Session = Depends(get_db),
+):
+    """
+    CSV counterpart to /api/inventory/bulk-add — same additive,
+    single-location semantics as the pasted-decklist version, but each
+    row can carry its own Set/Collector Number/Foil columns (same
+    headers as the ManaBox export /api/bulk-upload reads), letting a
+    CSV bulk-add pin an exact printing and finish per row.
+    """
+    if not location.strip():
+        raise HTTPException(status_code=400, detail="Location is required.")
+    csv_text = _read_bulk_csv_upload(file)
+    try:
+        result = bulk_add_cards_csv(db, csv_text, location, ignore_basic_lands)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _serialize_bulk(result)
+
+
+@app.post("/api/inventory/bulk-remove-csv")
+def bulk_remove_csv(
+    file: UploadFile = File(...),
+    location: str = Form(...),
+    ignore_basic_lands: bool = Form(True),
+    db: Session = Depends(get_db),
+):
+    """CSV counterpart to /api/inventory/bulk-remove — see bulk_add_csv."""
+    if not location.strip():
+        raise HTTPException(status_code=400, detail="Location is required.")
+    csv_text = _read_bulk_csv_upload(file)
+    try:
+        result = bulk_remove_cards_csv(db, csv_text, location, ignore_basic_lands)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _serialize_bulk(result)
 
 

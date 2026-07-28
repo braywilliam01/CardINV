@@ -135,6 +135,90 @@ def _aggregate_csv(
     return aggregated, warnings, skipped_basic_lands
 
 
+@dataclass
+class CsvCardRow:
+    raw_line: str          # a human-readable label for this row, for display in results
+    quantity: int
+    card_name: str
+    valid: bool
+    set_code: str = ""
+    collector_number: str = ""
+    finish: str = ""
+
+
+def parse_csv_rows(csv_text: str, ignore_basic_lands: bool = True) -> tuple[list[CsvCardRow], int]:
+    """
+    Row-by-row counterpart to _aggregate_csv, used by the additive CSV
+    bulk-add/remove path (inventory_admin.bulk_add_cards_csv /
+    bulk_remove_cards_csv). That path applies (and reports) one row at
+    a time against a single chosen location, the same shape as the
+    pasted-decklist bulk-add/remove flow -- unlike bulk_load_inventory's
+    whole-collection reconcile, so it needs per-row results rather than
+    a pre-aggregated total per printing.
+    Returns (rows, skipped_basic_land_rows).
+    """
+    reader = csv.DictReader(io.StringIO(csv_text))
+
+    if reader.fieldnames is None:
+        raise ValueError("CSV file appears to be empty or has no header row.")
+
+    name_col = _find_column(reader.fieldnames, NAME_COLUMNS)
+    qty_col = _find_column(reader.fieldnames, QTY_COLUMNS)
+    set_col = _find_column(reader.fieldnames, SET_COLUMNS)
+    number_col = _find_column(reader.fieldnames, NUMBER_COLUMNS)
+    foil_col = _find_column(reader.fieldnames, FOIL_COLUMNS)
+
+    if name_col is None or qty_col is None:
+        raise ValueError(
+            f"CSV missing required columns. Found headers: {reader.fieldnames}. "
+            f"Expected a name column ({NAME_COLUMNS}) and quantity column ({QTY_COLUMNS})."
+        )
+
+    rows: list[CsvCardRow] = []
+    skipped_basic_lands = 0
+
+    for i, row in enumerate(reader, start=2):  # start=2: row 1 is the header
+        raw_name = (row.get(name_col) or "").strip()
+        raw_qty = (row.get(qty_col) or "").strip()
+        raw_set = (row.get(set_col) or "").strip().upper() if set_col else ""
+        raw_number = (row.get(number_col) or "").strip() if number_col else ""
+        raw_foil = (row.get(foil_col) or "").strip() if foil_col else ""
+        finish = _norm_manabox_finish(raw_foil) if foil_col else ""
+
+        if not raw_name:
+            rows.append(CsvCardRow(raw_line=f"row {i}: (missing name)", quantity=0, card_name="", valid=False))
+            continue
+
+        if ignore_basic_lands and is_basic_land(raw_name):
+            skipped_basic_lands += 1
+            continue
+
+        try:
+            qty = int(raw_qty)
+        except (ValueError, TypeError):
+            rows.append(CsvCardRow(raw_line=f"row {i}: {raw_name} (invalid quantity '{raw_qty}')", quantity=0, card_name="", valid=False))
+            continue
+
+        if qty <= 0:
+            continue  # zero/negative quantity rows contribute nothing; not an error
+
+        if not (raw_set and raw_number):
+            raw_set, raw_number = "", ""
+
+        label = f"{qty} {raw_name}"
+        if raw_set:
+            label += f" ({raw_set}) {raw_number}"
+        if finish:
+            label += f" [{finish}]"
+
+        rows.append(CsvCardRow(
+            raw_line=label, quantity=qty, card_name=raw_name, valid=True,
+            set_code=raw_set, collector_number=raw_number, finish=finish,
+        ))
+
+    return rows, skipped_basic_lands
+
+
 def bulk_load_inventory(db: Session, csv_text: str, ignore_basic_lands: bool = True) -> ImportResult:
     """
     Reconciles inventory to match the new ManaBox export exactly,

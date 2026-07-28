@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from .models import Inventory, DeckAssignment, CardPrice
 from .parser import parse_decklist
+from .csv_import import parse_csv_rows
 from .fuzzy import find_best_match
 from .constants import is_basic_land
 from .finishes import normalize_finish
@@ -1004,6 +1005,68 @@ class BulkResult:
     skipped_basic_lands: int = 0
 
 
+def _bulk_add_one(
+    db: Session,
+    all_card_names: list[str],
+    card_name_query: str,
+    set_code: str,
+    collector_number: str,
+    finish: str,
+    quantity: int,
+    location: str,
+) -> tuple[str, str, str]:
+    """
+    Fuzzy-matches card_name_query against known names, then adds
+    `quantity` to the exact (name, set_code, collector_number, finish,
+    location) row, creating it if it doesn't exist yet. Shared by both
+    the pasted-decklist and CSV bulk-add paths so a pinned printing (or
+    finish) behaves identically no matter which input format supplied
+    it — leave set_code/collector_number/finish "" for the old
+    unresolved/unspecified behavior. Returns (resolved_name, status,
+    message).
+    """
+    matched_name = find_best_match(card_name_query, all_card_names, threshold=BULK_MATCH_THRESHOLD)
+
+    if matched_name is None:
+        # No close match — create a new inventory entry.
+        new_name = card_name_query
+        db.add(Inventory(
+            card_name=new_name, set_code=set_code, collector_number=collector_number,
+            finish=finish, total_quantity=quantity, location=location,
+        ))
+        # The session's autoflush is off (see get_db) -- without this,
+        # a later line in the same batch that fuzzy-matches back to
+        # new_name (e.g. the same card pasted twice) would run its
+        # lookup query before this insert reaches the DB, find nothing,
+        # and try to INSERT the identical primary key again, crashing
+        # with a UNIQUE-constraint IntegrityError instead of just
+        # adding to the row this line just created.
+        db.flush()
+        all_card_names.append(new_name)  # so later lines in this same batch can match it
+        return new_name, "created", f"'{new_name}' was new — added to inventory."
+
+    inv = (
+        db.query(Inventory)
+        .filter(
+            Inventory.card_name == matched_name,
+            Inventory.set_code == set_code,
+            Inventory.collector_number == collector_number,
+            Inventory.finish == finish,
+            Inventory.location == location,
+        )
+        .one_or_none()
+    )
+    if inv is None:
+        inv = Inventory(
+            card_name=matched_name, set_code=set_code, collector_number=collector_number,
+            finish=finish, total_quantity=0, location=location,
+        )
+        db.add(inv)
+        db.flush()  # same reasoning as above -- make this row visible to the next duplicate line
+    inv.total_quantity += quantity
+    return matched_name, "ok", ""
+
+
 def bulk_add_cards(
     db: Session,
     decklist_text: str,
@@ -1018,12 +1081,14 @@ def bulk_add_cards(
     Fuzzy-matches each line against existing card names first (so
     "Ligtning Bolt" adds to the existing "Lightning Bolt" row instead
     of creating a near-duplicate); if nothing matches closely enough, a
-    new card is created with the typed name. A pasted decklist carries
-    no set/number/finish info, so every add lands in the unresolved-
-    printing, unspecified-finish bucket at the given location, creating
-    it if this name's copies at that location don't already have such
-    a row — use the Manage Collection fix-up workflow afterward to
-    assign copies to specific printings/finishes/locations.
+    new card is created with the typed name. A line with a trailing
+    "(SET) 123"/"[SET] 123"/"SET-123" pins that exact printing (see
+    parser.py); otherwise the add lands in the unresolved-printing
+    bucket at the given location, creating it if this name's copies at
+    that location don't already have such a row. A pasted decklist has
+    no finish-pinning syntax, so finish is always left unspecified here
+    — use the CSV bulk-add path (bulk_add_cards_csv) or the Manage
+    Collection fix-up workflow to assign a finish.
     """
     location = _norm_location(location)
     parsed_lines = parse_decklist(decklist_text)
@@ -1041,42 +1106,157 @@ def bulk_add_cards(
             result.skipped_basic_lands += 1
             continue
 
-        matched_name = find_best_match(parsed.card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
-
-        if matched_name is None:
-            # No close match — create a new inventory entry.
-            new_name = parsed.card_name
-            db.add(Inventory(card_name=new_name, total_quantity=parsed.quantity, location=location))
-            all_card_names.append(new_name)  # so later lines in this same paste can match it
-            result.lines.append(
-                BulkLineResult(
-                    parsed.raw_line, new_name, parsed.quantity, parsed.quantity, "created",
-                    message=f"'{new_name}' was new — added to inventory.",
-                )
-            )
-            continue
-
-        inv = (
-            db.query(Inventory)
-            .filter(
-                Inventory.card_name == matched_name,
-                Inventory.set_code == "",
-                Inventory.collector_number == "",
-                Inventory.finish == "",
-                Inventory.location == location,
-            )
-            .one_or_none()
+        resolved_name, status, message = _bulk_add_one(
+            db, all_card_names, parsed.card_name,
+            parsed.set_code, parsed.collector_number, "",
+            parsed.quantity, location,
         )
-        if inv is None:
-            inv = Inventory(card_name=matched_name, total_quantity=0, location=location)
-            db.add(inv)
-        inv.total_quantity += parsed.quantity
         result.lines.append(
-            BulkLineResult(parsed.raw_line, matched_name, parsed.quantity, parsed.quantity, "ok")
+            BulkLineResult(parsed.raw_line, resolved_name, parsed.quantity, parsed.quantity, status, message)
         )
 
     db.commit()
     return result
+
+
+def bulk_add_cards_csv(
+    db: Session,
+    csv_text: str,
+    location: str,
+    ignore_basic_lands: bool = True,
+) -> BulkResult:
+    """
+    CSV counterpart to bulk_add_cards — same additive, single-location
+    semantics, but each row can carry its own Set/Collector Number/Foil
+    columns (see csv_import.parse_csv_rows), so a CSV bulk-add can pin
+    an exact printing *and* finish per row, where a pasted decklist
+    line can only ever pin a printing.
+    """
+    location = _norm_location(location)
+    rows, skipped_basic_lands = parse_csv_rows(csv_text, ignore_basic_lands)
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
+
+    result = BulkResult(skipped_basic_lands=skipped_basic_lands)
+
+    for row in rows:
+        if not row.valid:
+            result.warnings.append(f"Could not parse row: '{row.raw_line}'")
+            result.lines.append(BulkLineResult(row.raw_line, "", 0, 0, "unparseable"))
+            continue
+
+        resolved_name, status, message = _bulk_add_one(
+            db, all_card_names, row.card_name,
+            row.set_code, row.collector_number, row.finish,
+            row.quantity, location,
+        )
+        result.lines.append(
+            BulkLineResult(row.raw_line, resolved_name, row.quantity, row.quantity, status, message)
+        )
+
+    db.commit()
+    return result
+
+
+def _bulk_remove_one(
+    db: Session,
+    all_card_names: list[str],
+    card_name_query: str,
+    set_code: str,
+    collector_number: str,
+    finish: str,
+    quantity: int,
+    location: str,
+    already_removed: dict[str, int],
+) -> tuple[str, int, str, str]:
+    """
+    Mirrors _bulk_add_one for removal: fuzzy-matches the name, then
+    removes up to `quantity` from `location`, never dropping the
+    card's total (across every location) below what's checked out
+    across decks. When set_code/collector_number pin an exact printing
+    (optionally narrowed further by finish), removal draws only from
+    matching printing rows; otherwise it draws from the unresolved
+    bucket first, then any specific printing, the same priority as
+    before per-line pinning existed for removal. `already_removed` is
+    a running guard (keyed by resolved name) against duplicate
+    lines/rows in one batch double-claiming the same stock. Returns
+    (resolved_name, applied_qty, status, message).
+    """
+    matched_name = find_best_match(card_name_query, all_card_names, threshold=BULK_MATCH_THRESHOLD)
+
+    if matched_name is None:
+        return card_name_query, 0, "not_found", f"'{card_name_query}' not found in inventory."
+
+    decks = _decks_for(db, matched_name)
+    checked_out = sum(d.quantity for d in decks)
+
+    # Global floor: never drop the card's total (across every
+    # location) below what's checked out anywhere — decks are
+    # location-blind, so this has to stay a whole-card check.
+    all_locations_total = (
+        db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
+        .filter(Inventory.card_name == matched_name)
+        .scalar()
+    )
+    global_room = max(0, all_locations_total - checked_out)
+
+    location_printings = (
+        db.query(Inventory)
+        .filter(Inventory.card_name == matched_name, Inventory.location == location)
+        .all()
+    )
+
+    pinned_printing = bool(set_code and collector_number)
+    pinned_finish = bool(finish)
+    candidates = location_printings
+    if pinned_printing:
+        candidates = [p for p in candidates if p.set_code == set_code and p.collector_number == collector_number]
+    if pinned_finish:
+        candidates = [p for p in candidates if p.finish == finish]
+
+    candidates.sort(
+        key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
+    )
+    candidates_total = sum(p.total_quantity for p in candidates)
+
+    already_claimed = already_removed.get(matched_name, 0)
+    currently_removable = max(0, min(candidates_total, global_room) - already_claimed)
+
+    to_remove = min(currently_removable, quantity)
+
+    if to_remove > 0:
+        remaining = to_remove
+        for p in candidates:
+            if remaining <= 0:
+                break
+            take = min(p.total_quantity, remaining)
+            p.total_quantity -= take
+            remaining -= take
+            if p.total_quantity == 0:
+                # See assign_printing's matching comment -- an
+                # automated drain that empties a row deletes it.
+                db.delete(p)
+        already_removed[matched_name] = already_claimed + to_remove
+
+    status = "ok" if to_remove == quantity else ("partial" if to_remove > 0 else "not_found")
+
+    location_label = f"'{location}'" if location else "the unassigned-location bucket"
+    printing_label = f" as {set_code} #{collector_number}" if pinned_printing else ""
+    if status == "partial":
+        message = (
+            f"Only removed {to_remove}/{quantity} from {location_label}{printing_label} — the rest isn't "
+            f"there, or is checked out across decks and can't be removed until checked in."
+        )
+    elif status == "not_found" and to_remove == 0 and candidates_total == 0:
+        if pinned_printing and location_printings:
+            message = f"'{matched_name}' isn't in {location_label}{printing_label} — other printings exist there, but not this one."
+        else:
+            message = f"'{matched_name}' has 0 in {location_label}{printing_label} — nothing to remove there."
+    elif status == "not_found":
+        message = f"'{matched_name}' in {location_label}{printing_label} is fully checked out or unavailable — nothing removed."
+    else:
+        message = ""
+
+    return matched_name, to_remove, status, message
 
 
 def bulk_remove_cards(
@@ -1099,12 +1279,12 @@ def bulk_remove_cards(
     the requested removal would go below either limit, only the safe
     portion is removed and the line is marked "partial".
 
-    A pasted line carries no set/number info, so within the given
-    location, removal draws from the unresolved bucket first, then
-    falls back to specific printings (in set/number order) if the
-    unresolved bucket alone isn't enough — preferring to consume the
-    least-specific data before touching copies already resolved to a
-    known printing.
+    A line with a trailing "(SET) 123" pins removal to that exact
+    printing within the location (see parser.py); an unpinned line
+    draws from the unresolved bucket first, then falls back to
+    specific printings (in set/number order) if the unresolved bucket
+    alone isn't enough — preferring to consume the least-specific data
+    before touching copies already resolved to a known printing.
     """
     location = _norm_location(location)
     parsed_lines = parse_decklist(decklist_text)
@@ -1123,76 +1303,47 @@ def bulk_remove_cards(
             result.skipped_basic_lands += 1
             continue
 
-        matched_name = find_best_match(parsed.card_name, all_card_names, threshold=BULK_MATCH_THRESHOLD)
+        resolved_name, applied_qty, status, message = _bulk_remove_one(
+            db, all_card_names, parsed.card_name,
+            parsed.set_code, parsed.collector_number, "",
+            parsed.quantity, location, already_removed,
+        )
+        result.lines.append(
+            BulkLineResult(parsed.raw_line, resolved_name, parsed.quantity, applied_qty, status, message)
+        )
 
-        if matched_name is None:
-            result.lines.append(
-                BulkLineResult(
-                    parsed.raw_line, parsed.card_name, parsed.quantity, 0, "not_found",
-                    message=f"'{parsed.card_name}' not found in inventory.",
-                )
-            )
+    db.commit()
+    return result
+
+
+def bulk_remove_cards_csv(
+    db: Session,
+    csv_text: str,
+    location: str,
+    ignore_basic_lands: bool = True,
+) -> BulkResult:
+    """CSV counterpart to bulk_remove_cards — see bulk_add_cards_csv for
+    why this is a separate path from the ManaBox reconcile import."""
+    location = _norm_location(location)
+    rows, skipped_basic_lands = parse_csv_rows(csv_text, ignore_basic_lands)
+    all_card_names = [row.card_name for row in db.query(Inventory.card_name).distinct().all()]
+
+    result = BulkResult(skipped_basic_lands=skipped_basic_lands)
+    already_removed: dict[str, int] = {}
+
+    for row in rows:
+        if not row.valid:
+            result.warnings.append(f"Could not parse row: '{row.raw_line}'")
+            result.lines.append(BulkLineResult(row.raw_line, "", 0, 0, "unparseable"))
             continue
 
-        decks = _decks_for(db, matched_name)
-        checked_out = sum(d.quantity for d in decks)
-
-        # Global floor: never drop the card's total (across every
-        # location) below what's checked out anywhere — decks are
-        # location-blind, so this has to stay a whole-card check.
-        all_locations_total = (
-            db.query(func.coalesce(func.sum(Inventory.total_quantity), 0))
-            .filter(Inventory.card_name == matched_name)
-            .scalar()
+        resolved_name, applied_qty, status, message = _bulk_remove_one(
+            db, all_card_names, row.card_name,
+            row.set_code, row.collector_number, row.finish,
+            row.quantity, location, already_removed,
         )
-        global_room = max(0, all_locations_total - checked_out)
-
-        location_printings = (
-            db.query(Inventory)
-            .filter(Inventory.card_name == matched_name, Inventory.location == location)
-            .all()
-        )
-        location_printings.sort(
-            key=lambda r: (r.set_code != "" or r.collector_number != "", r.set_code, r.collector_number, r.finish)
-        )
-        location_total = sum(p.total_quantity for p in location_printings)
-
-        already_claimed = already_removed.get(matched_name, 0)
-        currently_removable = max(0, min(location_total, global_room) - already_claimed)
-
-        to_remove = min(currently_removable, parsed.quantity)
-
-        if to_remove > 0:
-            remaining = to_remove
-            for p in location_printings:
-                if remaining <= 0:
-                    break
-                take = min(p.total_quantity, remaining)
-                p.total_quantity -= take
-                remaining -= take
-                if p.total_quantity == 0:
-                    # See assign_printing's matching comment -- an
-                    # automated drain that empties a row deletes it.
-                    db.delete(p)
-            already_removed[matched_name] = already_claimed + to_remove
-
-        status = "ok" if to_remove == parsed.quantity else ("partial" if to_remove > 0 else "not_found")
-
-        location_label = f"'{location}'" if location else "the unassigned-location bucket"
-        if status == "partial":
-            message = (
-                f"Only removed {to_remove}/{parsed.quantity} from {location_label} — the rest isn't "
-                f"there, or is checked out across decks and can't be removed until checked in."
-            )
-        elif status == "not_found" and to_remove == 0 and location_total == 0:
-            message = f"'{matched_name}' has 0 in {location_label} — nothing to remove there."
-        elif status == "not_found":
-            message = f"'{matched_name}' in {location_label} is fully checked out or unavailable — nothing removed."
-        else:
-            message = ""
-
         result.lines.append(
-            BulkLineResult(parsed.raw_line, matched_name, parsed.quantity, to_remove, status, message)
+            BulkLineResult(row.raw_line, resolved_name, row.quantity, applied_qty, status, message)
         )
 
     db.commit()

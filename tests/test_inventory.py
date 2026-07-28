@@ -12,6 +12,93 @@ def test_bulk_add_lands_in_unresolved_bucket(registered_client):
     assert all(l["status"] in ("ok", "created") for l in r.json()["lines"])
 
 
+def test_bulk_add_pins_printing_from_set_and_number(registered_client):
+    r = registered_client.post(
+        "/api/inventory/bulk-add",
+        json={"decklist_text": "3 Ivy Lane Denizen (CLU) 166", "location": "Box A"},
+    )
+    assert r.status_code == 200, r.text
+
+    printings = registered_client.get(
+        "/api/inventory/printings", params={"card_name": "Ivy Lane Denizen"}
+    ).json()["printings"]
+    assert len(printings) == 1
+    assert printings[0]["set_code"] == "CLU"
+    assert printings[0]["collector_number"] == "166"
+    assert printings[0]["total_quantity"] == 3
+    assert not printings[0]["is_unresolved"]
+
+
+def test_bulk_add_same_card_twice_in_one_paste_does_not_crash(registered_client):
+    # A duplicate (or fuzzy-matching-to-the-same-row) line used to crash
+    # with a UNIQUE-constraint IntegrityError, since the session never
+    # flushed between lines -- the second line's "does this row exist
+    # yet" query couldn't see the row the first line had just created.
+    r = registered_client.post(
+        "/api/inventory/bulk-add",
+        json={"decklist_text": "2 Sol Ring\n1 Sol Ring", "location": "Box A"},
+    )
+    assert r.status_code == 200, r.text
+    lines = r.json()["lines"]
+    assert lines[0]["status"] == "created"
+    assert lines[1]["status"] == "ok"
+
+    printings = registered_client.get(
+        "/api/inventory/printings", params={"card_name": "Sol Ring"}
+    ).json()["printings"]
+    assert len(printings) == 1
+    assert printings[0]["total_quantity"] == 3
+
+
+def test_bulk_add_no_longer_caps_at_100_lines(registered_client):
+    decklist = "\n".join(f"1 Unique Test Card {i}" for i in range(150))
+    r = registered_client.post(
+        "/api/inventory/bulk-add",
+        json={"decklist_text": decklist, "location": "Box A"},
+    )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["lines"]) == 150
+
+
+def test_bulk_add_csv_pins_printing_and_finish(registered_client):
+    csv_text = "Name,Quantity,Set code,Collector Number,Foil\nIvy Lane Denizen,2,CLU,166,foil\n"
+    r = registered_client.post(
+        "/api/inventory/bulk-add-csv",
+        data={"location": "Box A", "ignore_basic_lands": "true"},
+        files={"file": ("cards.csv", csv_text, "text/csv")},
+    )
+    assert r.status_code == 200, r.text
+
+    printings = registered_client.get(
+        "/api/inventory/printings", params={"card_name": "Ivy Lane Denizen"}
+    ).json()["printings"]
+    assert len(printings) == 1
+    assert printings[0]["set_code"] == "CLU"
+    assert printings[0]["collector_number"] == "166"
+    assert printings[0]["finish"] == "Foil"
+    assert printings[0]["total_quantity"] == 2
+
+
+def test_bulk_remove_pins_to_specific_printing(registered_client):
+    registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "2 Sol Ring", "location": "Box A"})
+    registered_client.post(
+        "/api/inventory",
+        json={"card_name": "Sol Ring", "total_quantity": 3, "set_code": "cmr", "collector_number": "123", "location": "Box A"},
+    )
+
+    r = registered_client.post(
+        "/api/inventory/bulk-remove",
+        json={"decklist_text": "1 Sol Ring (CMR) 123", "location": "Box A"},
+    )
+    assert r.status_code == 200, r.text
+
+    printings = registered_client.get("/api/inventory/printings", params={"card_name": "Sol Ring"}).json()["printings"]
+    unresolved = next(p for p in printings if p["is_unresolved"])
+    cmr = next(p for p in printings if not p["is_unresolved"])
+    assert unresolved["total_quantity"] == 2  # untouched -- removal was pinned to CMR
+    assert cmr["total_quantity"] == 2
+
+
 def test_add_second_printing_increases_printing_count(registered_client):
     registered_client.post("/api/inventory/bulk-add", json={"decklist_text": "2 Sol Ring", "location": "Box A"})
 

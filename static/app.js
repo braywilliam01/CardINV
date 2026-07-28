@@ -1857,6 +1857,28 @@ function renderBulkInvResults(lines, warnings, skippedBasics) {
   });
 }
 
+// Above this many pasted lines, confirm before submitting so a huge
+// accidental paste (e.g. a whole webpage) doesn't silently blow through
+// what used to be a hard 100-line cap with no feedback.
+const BULK_INV_CONFIRM_LINE_THRESHOLD = 100;
+
+document.getElementById("bulk-inv-csv-toggle").addEventListener("change", (e) => {
+  document.getElementById("bulk-inv-text-mode").classList.toggle("hidden", e.target.checked);
+  document.getElementById("bulk-inv-csv-mode").classList.toggle("hidden", !e.target.checked);
+});
+
+async function withBulkButtonBusy(btnEl, fn) {
+  const originalText = btnEl.textContent;
+  btnEl.disabled = true;
+  btnEl.textContent = "Working...";
+  try {
+    await fn();
+  } finally {
+    btnEl.disabled = false;
+    btnEl.textContent = originalText;
+  }
+}
+
 async function runBulkInventoryAction(endpoint, btnEl) {
   const decklist_text = document.getElementById("bulk-inv-input").value;
   const ignore_basic_lands = document.getElementById("bulk-inv-ignore-basics").checked;
@@ -1871,34 +1893,77 @@ async function runBulkInventoryAction(endpoint, btnEl) {
     return;
   }
 
-  const originalText = btnEl.textContent;
-  btnEl.disabled = true;
-  btnEl.textContent = "Working...";
-
-  try {
-    const res = await fetch(`${API_BASE}/inventory/${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decklist_text, location, ignore_basic_lands }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
-    renderBulkInvResults(data.lines, data.warnings, data.skipped_basic_lands);
-    loadInventory();
-    loadInventoryLocations();
-  } catch (err) {
-    alert(`${endpoint} failed: ${err.message}`);
-  } finally {
-    btnEl.disabled = false;
-    btnEl.textContent = originalText;
+  const lineCount = decklist_text.split("\n").filter((l) => l.trim()).length;
+  if (lineCount > BULK_INV_CONFIRM_LINE_THRESHOLD) {
+    if (!confirm(`You're about to submit ${lineCount} lines. Continue?`)) return;
   }
+
+  await withBulkButtonBusy(btnEl, async () => {
+    try {
+      const res = await fetch(`${API_BASE}/inventory/${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decklist_text, location, ignore_basic_lands }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+      renderBulkInvResults(data.lines, data.warnings, data.skipped_basic_lands);
+      loadInventory();
+      loadInventoryLocations();
+    } catch (err) {
+      alert(`${endpoint} failed: ${err.message}`);
+    }
+  });
+}
+
+async function runBulkInventoryCsvAction(endpoint, btnEl) {
+  const fileInput = document.getElementById("bulk-inv-csv-file");
+  const file = fileInput.files[0];
+  const ignore_basic_lands = document.getElementById("bulk-inv-ignore-basics").checked;
+  const location = document.getElementById("bulk-inv-location").value.trim();
+
+  if (!file) {
+    alert("Choose a CSV file first.");
+    return;
+  }
+  if (!location) {
+    alert("Enter a location first — required for bulk add/remove.");
+    return;
+  }
+
+  await withBulkButtonBusy(btnEl, async () => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("location", location);
+      formData.append("ignore_basic_lands", ignore_basic_lands ? "true" : "false");
+
+      const res = await fetch(`${API_BASE}/inventory/${endpoint}-csv`, { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Server error: ${res.status}`);
+      renderBulkInvResults(data.lines, data.warnings, data.skipped_basic_lands);
+      loadInventory();
+      loadInventoryLocations();
+      fileInput.value = "";
+    } catch (err) {
+      alert(`${endpoint}-csv failed: ${err.message}`);
+    }
+  });
 }
 
 document.getElementById("bulk-inv-add-btn").addEventListener("click", (e) => {
-  runBulkInventoryAction("bulk-add", e.target);
+  if (document.getElementById("bulk-inv-csv-toggle").checked) {
+    runBulkInventoryCsvAction("bulk-add", e.target);
+  } else {
+    runBulkInventoryAction("bulk-add", e.target);
+  }
 });
 document.getElementById("bulk-inv-remove-btn").addEventListener("click", (e) => {
-  runBulkInventoryAction("bulk-remove", e.target);
+  if (document.getElementById("bulk-inv-csv-toggle").checked) {
+    runBulkInventoryCsvAction("bulk-remove", e.target);
+  } else {
+    runBulkInventoryAction("bulk-remove", e.target);
+  }
 });
 
 // ---------- Decks ----------

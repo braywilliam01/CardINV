@@ -58,7 +58,6 @@ _STRIPPABLE_JUNK = re.compile(
     re.VERBOSE,
 )
 
-MAX_LINES = 100
 MAX_LINE_LENGTH = 50
 
 
@@ -124,14 +123,15 @@ def parse_line(line: str) -> ParsedLine:
 
 def parse_decklist(text: str) -> list[ParsedLine]:
     """
-    Parse a multi-line decklist. Enforces the 100-line / 50-char-per-line
-    limits from the spec; lines beyond those limits are marked invalid
-    rather than silently dropped, so the caller can surface an error.
+    Parse a multi-line decklist. No cap on line count — a huge paste is
+    the caller's call to confirm (or not) before it ever gets here, not
+    this function's to silently truncate. Lines longer than
+    MAX_LINE_LENGTH are still marked invalid rather than silently
+    chopped mid-line, so the caller can surface an error.
     """
-    lines = text.splitlines()[:MAX_LINES]
     results = []
 
-    for line in lines:
+    for line in text.splitlines():
         if len(line) > MAX_LINE_LENGTH:
             results.append(
                 ParsedLine(raw_line=line, quantity=0, card_name="", valid=False)

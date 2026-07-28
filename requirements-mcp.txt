@@ -1,4 +1,4 @@
 # Only needed to run mcp_server.py (the AI-agent MCP wrapper) — the
 # FastAPI app itself has no dependency on the MCP SDK.
 -r requirements.txt
-mcp==1.28.1
+mcp==2.0.0

@@ -60,7 +60,7 @@ echo "Deleting decks..."
 curl -s -b "$COOKIE_JAR" "$BASE_URL/api/decks" | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['decks']))" |
 while IFS= read -r deck; do
   [[ -z "$deck" ]] && continue
-  encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$deck")
+  encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$deck")
   status=$(curl -s -o /dev/null -w "%{http_code}" -b "$COOKIE_JAR" -X DELETE "$BASE_URL/api/decks/$encoded")
   echo "  [$status] $deck"
 done

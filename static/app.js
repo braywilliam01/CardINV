@@ -1163,12 +1163,9 @@ document.getElementById("manage-filter-no-location").addEventListener("change", 
   managePage = 1;
   loadInventory();
 });
-document.getElementById("manage-filter-location").addEventListener("input", () => {
-  clearTimeout(manageSearchDebounce);
-  manageSearchDebounce = setTimeout(() => {
-    managePage = 1;
-    loadInventory();
-  }, 300);
+document.getElementById("manage-filter-location").addEventListener("change", () => {
+  managePage = 1;
+  loadInventory();
 });
 document.getElementById("manage-page-size").addEventListener("change", (e) => {
   managePageSize = parseInt(e.target.value, 10);
@@ -1813,10 +1810,20 @@ let currentLocations = [];
 
 function applyLocationDatalist() {
   const datalist = document.getElementById("add-card-location-list");
-  if (!datalist) return;
-  datalist.innerHTML = currentLocations
-    .map((l) => `<option value="${escapeHtml(l)}"></option>`)
-    .join("");
+  if (datalist) {
+    datalist.innerHTML = currentLocations
+      .map((l) => `<option value="${escapeHtml(l)}"></option>`)
+      .join("");
+  }
+
+  const filterSelect = document.getElementById("manage-filter-location");
+  if (filterSelect) {
+    const prev = filterSelect.value;
+    filterSelect.innerHTML =
+      `<option value="">All locations</option>` +
+      currentLocations.map((l) => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join("");
+    if (currentLocations.includes(prev)) filterSelect.value = prev;
+  }
 }
 
 async function loadInventoryLocations() {

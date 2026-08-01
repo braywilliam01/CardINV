@@ -504,9 +504,10 @@
         <input id="manage-filter-no-location" type="checkbox" class="rounded border-slate-700 bg-slate-900">
         No location only
       </label>
-      <input id="manage-filter-location" type="text" list="add-card-location-list" placeholder="Filter by location..."
-        aria-label="Filter by location"
+      <select id="manage-filter-location" aria-label="Filter by location"
         class="w-40 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+        <option value="">All locations</option>
+      </select>
       <select id="manage-page-size" aria-label="Results per page" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
         <option value="25">25 / page</option>
         <option value="50" selected>50 / page</option>

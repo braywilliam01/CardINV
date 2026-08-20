@@ -6,6 +6,8 @@ collections per account — with decklist parsing, fuzzy matching, and deck
 checkout/check-in tracking. Multi-user: each account gets its own isolated
 data behind a login.
 
+<img width="1413" height="946" alt="image" src="https://github.com/user-attachments/assets/8f47f73a-64b3-4f99-9abb-be057977497f" />
+
 ## Features
 
 - **Accounts** — username/password login (bcrypt-hashed, signed session
